@@ -1,34 +1,47 @@
-"""YouTube Transcript 어댑터 — v1 stub."""
+"""
+YouTube Transcript Adapter — interface 완성 + stub 구현.
+
+환경변수:
+  YOUTUBE_TRANSCRIPT_MODE — 'manual'(기본) | 'auto' | 'disabled'
+
+'disabled' 이면 is_available() == False.
+그 외에는 stub 데이터 반환 (real youtube-transcript-api 연동은 v2).
+"""
 from __future__ import annotations
 
 import os
-from src.research.base import ResearchAdapter, ResearchResult, ResearchClaim
+
+from src.research.base import BaseResearchAdapter, ResearchClaim, ResearchResult
+
+_YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"  # 준비만
 
 
-class YouTubeTranscriptAdapter(ResearchAdapter):
+class YouTubeTranscriptAdapter(BaseResearchAdapter):
+    name = "youtube"
 
-    @property
-    def name(self) -> str:
-        return "youtube_transcript"
+    def __init__(self) -> None:
+        self._mode = os.environ.get("YOUTUBE_TRANSCRIPT_MODE", "manual").lower()
 
     def is_available(self) -> bool:
-        mode = os.environ.get("YOUTUBE_TRANSCRIPT_MODE", "manual")
-        return mode != "disabled"
+        return self._mode != "disabled"
 
-    def search(self, query: str, **kwargs) -> ResearchResult:
+    def search(self, query: str) -> ResearchResult:
         if not self.is_available():
             return ResearchResult(
                 adapter_name=self.name,
-                error="YOUTUBE_TRANSCRIPT_MODE is disabled",
+                error="YOUTUBE_TRANSCRIPT_MODE=disabled",
             )
-        # TODO: 실제 YouTube transcript 수집 구현
+        # stub
         return ResearchResult(
             adapter_name=self.name,
             claims=[
                 ResearchClaim(
-                    claim=f"[stub] YouTube transcript for: {query}",
-                    source="youtube_stub",
-                    excerpt="stub transcript excerpt",
-                )
+                    text=f"[YouTube stub] {query}: 영상 트랜스크립트 요약 1",
+                    source="https://stub.youtube.example/1",
+                ),
+                ResearchClaim(
+                    text=f"[YouTube stub] {query}: 영상 트랜스크립트 요약 2",
+                    source="https://stub.youtube.example/2",
+                ),
             ],
         )

@@ -12,6 +12,10 @@ from src.orchestrator import (
 )
 from src.approval.approval_service import apply_user_approval
 from src.store.artifact_store import load_artifact
+from src.cursor.cursor_executor import (
+    is_auto_mode, CursorExecutor, CursorExecutorError, CursorTimeoutError,
+)
+from src.cursor.cursor_result_adapter import adapt_cursor_result
 
 
 def _prompt(message: str) -> str:
@@ -128,7 +132,7 @@ def _approval_flow(db_path: str, base_dir: str, artifact: dict) -> None:
 
 
 def _post_approval_flow(db_path: str, base_dir: str, artifact: dict) -> None:
-    """패킷 생성 → Cursor 실행 대기 → 결과 입력."""
+    """패킷 생성 → Cursor 실행(자동/수동) → 결과 저장 → 검증/finalize."""
     run_id = artifact["run_id"]
     goal = artifact.get("raw_input", "")
 
@@ -142,24 +146,65 @@ def _post_approval_flow(db_path: str, base_dir: str, artifact: dict) -> None:
 
     print(f"\n패킷 생성: {packet['packet_created']}")
     print(f"패킷 경로: {packet['packet_path']}")
-    print("위 파일을 Cursor Background Agent에 붙여넣고 실행하세요.\n")
 
-    # 실행 결과 입력
+    # 자동 모드 시도
+    if is_auto_mode():
+        auto_result = _try_cursor_auto_execute(
+            packet_path=packet["packet_path"],
+            run_id=run_id,
+        )
+        if auto_result is not None:
+            save_execution_result_step(
+                db_path, run_id,
+                auto_result["changed_files"],
+                auto_result["test_results"],
+                auto_result["run_log"],
+            )
+            artifact_updated = load_artifact(db_path, run_id=run_id)
+            _verification_and_finalize(db_path, artifact_updated or artifact)
+            return
+        # 자동 실행 실패 → 수동 fallback
+        print("자동 실행 실패 — 수동 입력으로 전환합니다.\n")
+
+    # 수동 모드 (기본 또는 자동 실패 fallback)
+    print("위 파일을 Cursor Background Agent에 붙여넣고 실행하세요.\n")
     changed_files_input = _prompt("changed_files (쉼표 구분): ")
     test_results = _prompt("test_results: ")
     run_log = _prompt("run_log: ")
 
     changed_files = [f.strip() for f in changed_files_input.split(",") if f.strip()]
-
     save_execution_result_step(db_path, run_id, changed_files, test_results, run_log)
 
-    # 검증 + finalize
     artifact_updated = load_artifact(db_path, run_id=run_id)
     _verification_and_finalize(db_path, artifact_updated or artifact)
 
 
+def _try_cursor_auto_execute(
+    packet_path: str,
+    run_id: str,
+) -> dict | None:
+    """
+    Cursor 자동 실행 시도.
+    성공 시 execution_result dict 반환.
+    실패 시 None 반환 (에러 출력 후 manual fallback).
+    """
+    try:
+        print("Cursor 자동 실행 중...")
+        executor = CursorExecutor()
+        raw_result = executor.execute(packet_path=packet_path, run_id=run_id)
+        adapted = adapt_cursor_result(raw_result)
+        print(f"자동 실행 완료: {len(adapted['changed_files'])}개 파일 변경")
+        return adapted
+    except CursorTimeoutError as e:
+        print(f"[자동 실행 timeout] {e}")
+        return None
+    except CursorExecutorError as e:
+        print(f"[자동 실행 실패] {e}")
+        return None
+
+
 def _verification_and_finalize(db_path: str, artifact: dict) -> None:
-    """검증 → finalize."""
+    """검증 → finalize. 실패 시 복구 분기 제시."""
     run_id = artifact["run_id"]
 
     v = run_verification(db_path, run_id)
@@ -168,18 +213,26 @@ def _verification_and_finalize(db_path: str, artifact: dict) -> None:
     if not v.get("all_passed"):
         alignment = v.get("spec_alignment", {})
         failure_type = alignment.get("failure_type", "")
+
         if failure_type == "slice_issue":
-            print("→ slice 문제: task slice queue로 복귀 필요")
+            print("→ slice 문제: task slice queue로 복귀")
+            print("  현재 slice를 재실행합니다.")
+            _retry_slice_flow(db_path, artifact)
         elif failure_type == "doc_issue":
-            print("→ doc 문제: cross-audit / canonical doc 재개정 필요")
-        print("검증 실패. 수동으로 재시도하세요.")
+            print("→ doc 문제: canonical doc 재개정")
+            _reaudit_doc_flow(db_path, artifact)
+        else:
+            print("검증 실패. 수동으로 재시도하세요.")
         return
 
     exec_result = artifact.get("execution_result", {})
+    # 검증 통과 후 최신 artifact로 exec_result 재로드
+    latest = load_artifact(db_path, run_id=run_id) or artifact
+    exec_result = latest.get("execution_result") or {}
     summary = finalize_run_step(
         db_path=db_path,
         run_id=run_id,
-        goal=artifact.get("raw_input", ""),
+        goal=latest.get("raw_input", ""),
         approval_status="approved",
         changed_files=exec_result.get("changed_files", []),
         test_results=exec_result.get("test_results", ""),
@@ -189,6 +242,39 @@ def _verification_and_finalize(db_path: str, artifact: dict) -> None:
     print("\n" + "─" * 40)
     print(summary)
     print("─" * 40)
+
+
+def _retry_slice_flow(db_path: str, artifact: dict) -> None:
+    """slice_issue 복구 — 동일 slice 재실행 후 결과 재입력."""
+    from src.orchestrator import retry_current_slice
+
+    run_id = artifact["run_id"]
+    updated = retry_current_slice(db_path, run_id)
+    _print_status(updated)
+
+    if updated.get("approval_status") == "pending":
+        _approval_flow(db_path, ".", updated)
+
+
+def _reaudit_doc_flow(db_path: str, artifact: dict) -> None:
+    """doc_issue 복구 — target_files 교정 후 재동결."""
+    from src.orchestrator import reaudit_doc
+
+    run_id = artifact["run_id"]
+    exec_result = artifact.get("execution_result") or {}
+    current_changed = exec_result.get("changed_files", [])
+
+    print(f"  현재 changed_files: {current_changed}")
+    raw = input("  허용할 target_files 입력 (쉼표 구분, 엔터=changed_files 그대로): ").strip()
+    if raw:
+        patched = [f.strip() for f in raw.split(",") if f.strip()]
+    else:
+        patched = current_changed
+
+    updated = reaudit_doc(db_path, run_id, patched_target_files=patched)
+    print(f"  재동결 완료. run_status={updated.get('run_status')}")
+    print("  패킷을 재생성하고 Cursor를 다시 실행하세요.")
+    _post_approval_flow(db_path, ".", updated)
 
 
 def _print_status(artifact: dict) -> None:

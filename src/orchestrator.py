@@ -6,7 +6,7 @@ CLI 또는 외부에서 단계별 호출.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.graph_flow import build_graph
 from src.utils.id_generator import generate_run_id, generate_thread_id
@@ -312,6 +312,99 @@ def run_next_slice(db_path: str, run_id: str) -> Dict[str, Any]:
         "current_slice_index": current_idx,  # 아직 advance 안 함
     }
     update_artifact(db_path, run_id, updates)
+    return load_artifact(db_path, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
+# 8. 실패 복구 진입점
+# ---------------------------------------------------------------------------
+
+def retry_current_slice(db_path: str, run_id: str) -> Dict[str, Any]:
+    """
+    slice_issue 복구 — 현재 slice를 advance 없이 재실행.
+    run_status를 'waiting_approval'로 리셋한 뒤 run_next_slice() 위임.
+    """
+    artifact = load_artifact(db_path, run_id=run_id)
+    if not artifact:
+        raise ValueError(f"artifact not found: {run_id}")
+
+    # 재실행 전 상태 초기화 (이전 실패 결과 제거)
+    update_artifact(db_path, run_id, {
+        "execution_result": None,
+        "result_verification": None,
+        "spec_alignment": None,
+        "run_status": "waiting_retry_slice",
+    })
+    return run_next_slice(db_path, run_id)
+
+
+def reaudit_doc(
+    db_path: str,
+    run_id: str,
+    patched_target_files: Optional[list] = None,
+) -> Dict[str, Any]:
+    """
+    doc_issue 복구 — deliverable_spec.target_files를 교정한 뒤
+    unfreeze → cross_audit → re-freeze → deliverable_spec 재생성.
+
+    patched_target_files: None이면 기존 changed_files로 자동 채움.
+    반환: 업데이트된 artifact dict
+    """
+    from src.document.canonical_freeze import unfreeze_for_reaudit, CanonicalDoc, freeze_document
+    from src.document.cross_audit import run_cross_audit
+    from src.document.deliverable_spec import build_deliverable_spec
+
+    artifact = load_artifact(db_path, run_id=run_id)
+    if not artifact:
+        raise ValueError(f"artifact not found: {run_id}")
+
+    # 1. target_files 결정
+    if patched_target_files is None:
+        exec_result = artifact.get("execution_result") or {}
+        patched_target_files = exec_result.get("changed_files", [])
+
+    if not patched_target_files:
+        raise ValueError("patched_target_files가 비어있음 — 범위를 명시하세요")
+
+    # 2. canonical_doc unfreeze
+    canonical_raw = artifact.get("canonical_doc") or {}
+    canonical = CanonicalDoc(
+        document=canonical_raw.get("document", canonical_raw),
+        frozen=canonical_raw.get("frozen", False),
+        frozen_at=canonical_raw.get("frozen_at", ""),
+        version=canonical_raw.get("version", 1),
+    )
+    unfrozen = unfreeze_for_reaudit(canonical)
+
+    # 3. cross_audit 재실행
+    audit_result = run_cross_audit(unfrozen.document)
+
+    # 4. re-freeze — unfreeze_for_reaudit이 올린 version 인계 (freeze_document는 항상 v1으로 초기화하므로 직접 구성)
+    from datetime import datetime, timezone
+    refrozen = CanonicalDoc(
+        document=unfrozen.document,
+        frozen=audit_result.passed,
+        frozen_at=datetime.now(timezone.utc).isoformat() if audit_result.passed else "",
+        version=unfrozen.version,
+    )
+
+    # 5. deliverable_spec target_files 교정
+    existing_spec = artifact.get("deliverable_spec") or {}
+    patched_spec = {
+        **existing_spec,
+        "target_files": patched_target_files,
+    }
+
+    update_artifact(db_path, run_id, {
+        "canonical_doc":      refrozen.to_dict(),
+        "canonical_frozen":   refrozen.frozen,
+        "cross_audit_result": audit_result.to_dict(),
+        "deliverable_spec":   patched_spec,
+        "result_verification": None,
+        "spec_alignment":     None,
+        "execution_result":   None,
+        "run_status":         "doc_reaudited",
+    })
     return load_artifact(db_path, run_id=run_id)
 
 

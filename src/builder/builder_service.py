@@ -1,92 +1,94 @@
-"""Builder 서비스 — OpenRouter LLM 호출 또는 fake 경로."""
+"""
+Builder Service.
+
+real 경로: OPENROUTER_API_KEY 있으면 OpenRouter 호출
+fake 경로: API key 없으면 stub output 반환
+"""
 from __future__ import annotations
 
-import json
+import os
+from typing import Optional, Tuple
+
 import httpx
 
-from src.builder.builder_schema import (
-    BuilderInput, BuilderOutput, BuilderStep,
-    BUILDER_STATUS_CREATED, BUILDER_STATUS_FAILED,
-)
-from src.builder.builder_prompt import BUILDER_SYSTEM_PROMPT, build_user_prompt
 from src.builder.builder_config import (
-    is_llm_ready, get_api_key, get_builder_model,
-    get_builder_verbosity, get_base_url, CHAT_PATH,
+    get_builder_model, get_verbosity, _OPENROUTER_URL
 )
+from src.builder.builder_schema import BuilderResult, BUILDER_STATUS_CREATED
 
 
-def _prepare_input(raw_input: str, task_type: str, plan: list[dict]) -> BuilderInput:
-    return BuilderInput(raw_input=raw_input.strip(), task_type=task_type.strip(), plan=plan)
-
-
-def _run_fake_builder(inp: BuilderInput) -> BuilderOutput:
-    steps = [
-        BuilderStep(step=1, action="수정 후보 파일 확인"),
-        BuilderStep(step=2, action="변경 포인트 초안 작성"),
-        BuilderStep(step=3, action="테스트 포인트 정리"),
+def _fake_output(plan: list[dict]) -> list[dict]:
+    if plan:
+        return [{"step": s["step"], "action": f"{s['description']} — stub 구현 완료"} for s in plan]
+    return [
+        {"step": 1, "action": "src/auth.py 수정 — 버그 수정 완료"},
+        {"step": 2, "action": "tests/test_auth.py 추가 — 테스트 verify 완료"},
     ]
-    return BuilderOutput(builder_output=steps, builder_status=BUILDER_STATUS_CREATED)
 
 
-def _parse_llm_output(content: str) -> BuilderOutput:
-    try:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = "\n".join(
-                line for line in cleaned.splitlines()
-                if not line.strip().startswith("```")
-            ).strip()
-        data = json.loads(cleaned)
-        raw_steps = data.get("builder_output") or data.get("actions") or data.get("steps") or []
-        if isinstance(raw_steps, list) and raw_steps:
-            steps = []
-            for i, item in enumerate(raw_steps, start=1):
-                if isinstance(item, dict):
-                    action = item.get("action") or item.get("description") or item.get("desc") or str(item)
-                    step_num = item.get("step", i)
-                else:
-                    action, step_num = str(item), i
-                steps.append(BuilderStep(step=step_num, action=action.strip()))
-            return BuilderOutput(builder_output=steps, builder_status=BUILDER_STATUS_CREATED)
-    except (json.JSONDecodeError, Exception):
-        pass
-
-    lines = [
-        line.lstrip("0123456789.-) ").strip()
-        for line in content.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    lines = [l for l in lines if l]
-    if lines:
-        steps = [BuilderStep(step=i, action=l) for i, l in enumerate(lines[:9], start=1)]
-        return BuilderOutput(builder_output=steps, builder_status=BUILDER_STATUS_CREATED)
-
-    raise ValueError(f"builder LLM 응답 파싱 실패: {content[:200]!r}")
+def _parse_output(text: str) -> list[dict]:
+    steps = []
+    for i, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if line[0].isdigit() and ". " in line:
+            action = line.split(". ", 1)[1].strip()
+        else:
+            action = line
+        if action:
+            steps.append({"step": i, "action": action})
+    return steps
 
 
-def _run_llm_builder(inp: BuilderInput) -> BuilderOutput:
-    url = get_base_url() + CHAT_PATH
-    payload = {
-        "model": get_builder_model(),
-        "messages": [
-            {"role": "system", "content": BUILDER_SYSTEM_PROMPT},
-            {"role": "user",   "content": build_user_prompt(inp.raw_input, inp.task_type, inp.plan)},
-        ],
-        "verbosity": get_builder_verbosity(),
-    }
-    headers = {
-        "Authorization": f"Bearer {get_api_key()}",
-        "Content-Type":  "application/json",
-    }
-    response = httpx.post(url, json=payload, headers=headers, timeout=30)
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-    return _parse_llm_output(content)
+def run_builder(
+    raw_input: str,
+    task_type: str,
+    plan: list[dict],
+) -> Tuple[BuilderResult, Optional[str]]:
+    api_key = os.environ.get("OPENROUTER_API_KEY")
 
+    if not api_key:
+        return BuilderResult(
+            builder_output=_fake_output(plan),
+            builder_status=BUILDER_STATUS_CREATED,
+        ), None
 
-def run_builder(raw_input: str, task_type: str, plan: list[dict]) -> tuple[BuilderOutput, str | None]:
-    """반환: (BuilderOutput, model_id | None)"""
-    inp = _prepare_input(raw_input, task_type, plan)
-    if not is_llm_ready():
-        return _run_fake_builder(inp), None
-    return _run_llm_builder(inp), get_builder_model()
+    model = get_builder_model()
+    verbosity = get_verbosity()
+    plan_text = "\n".join(
+        f"{s['step']}. {s['description']}" for s in plan
+    ) if plan else "(없음)"
+
+    resp = httpx.post(
+        _OPENROUTER_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://ai-orchestrator-v1",
+            "X-Title": "ai-orchestrator-v1",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"task_type: {task_type}\n"
+                        f"goal: {raw_input}\n\n"
+                        f"실행 계획:\n{plan_text}\n\n"
+                        "각 단계별 구체적인 실행 내역을 번호 목록으로 작성하세요."
+                    ),
+                }
+            ],
+            "verbosity": verbosity,
+        },
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+
+    content = resp.json()["choices"][0]["message"]["content"]
+    output = _parse_output(content) or _fake_output(plan)
+    return BuilderResult(
+        builder_output=output,
+        builder_status=BUILDER_STATUS_CREATED,
+    ), model
