@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}프로젝트 목록 — AI Orchestrator v4{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <h2>프로젝트 목록</h2>
+    <p class="lead">최근 프로젝트 최대 100개</p>
+</section>
+
+{% if projects %}
+<section class="project-list">
+    {% for p in projects %}
+    <a href="/project/{{ p.project_id }}" class="project-item">
+        <div class="project-item-header">
+            <h3>{{ p.title or "(제목 없음)" }}</h3>
+            <span class="badge badge-{{ p.status }}">{{ p.status }}</span>
+        </div>
+        <div class="project-item-meta">
+            <span>Phase: <strong>{{ p.current_phase }}</strong></span>
+            <span>생성: {{ p.created_at }}</span>
+            <span>수정: {{ p.updated_at }}</span>
+        </div>
+        <div class="project-item-id">
+            <code>{{ p.project_id }}</code>
+        </div>
+    </a>
+    {% endfor %}
+</section>
+{% else %}
+<section class="empty-state">
+    <p>프로젝트가 없습니다. <a href="/">새 프로젝트를 시작하세요.</a></p>
+</section>
+{% endif %}
+{% endblock %}

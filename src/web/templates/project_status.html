@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project.title }} — AI Orchestrator v4{% endblock %}
+
+{% block content %}
+<section class="project-header">
+    <h2>{{ project.title }}</h2>
+    <div class="project-meta">
+        <span class="badge">{{ project.status }}</span>
+        <span class="meta">현재 Phase: <strong>{{ project.current_phase }}</strong></span>
+        <span class="meta">프로젝트 ID: <code>{{ project.project_id }}</code></span>
+    </div>
+</section>
+
+{# Phase 0.5 결과 #}
+{% if artifact.feasibility_result %}
+<section class="phase-card">
+    <h3>Phase 0.5 · 처리 가능성 판정</h3>
+    <div class="verdict verdict-{{ artifact.feasibility_result.verdict }}">
+        <strong>{{ artifact.feasibility_result.verdict }}</strong>
+        <span>{{ artifact.feasibility_result.reason }}</span>
+    </div>
+    {% if artifact.feasibility_result.suggested_clarification %}
+    <div class="note">
+        💡 {{ artifact.feasibility_result.suggested_clarification }}
+    </div>
+    {% endif %}
+    <div class="meta">판정 주체: {{ artifact.feasibility_result.decided_by }}</div>
+</section>
+{% endif %}
+
+{# Phase 0.5가 possible이면 Phase 1 진행 버튼 #}
+{% if artifact.feasibility_result and artifact.feasibility_result.verdict == "possible" and not artifact.subtopics %}
+<form method="POST" action="/project/{{ project.project_id }}/phase-1">
+    <button type="submit" class="btn btn-primary">▶ Phase 1 · 서브주제 분해 시작</button>
+</form>
+{% endif %}
+
+{# Phase 1 결과 #}
+{% if artifact.subtopics %}
+<section class="phase-card">
+    <h3>Phase 1 · 서브주제 분해 ({{ artifact.subtopics|length }}개)</h3>
+    <ul class="subtopic-list">
+        {% for s in artifact.subtopics %}
+        <li>{{ s }}</li>
+        {% endfor %}
+    </ul>
+
+    {% if not artifact.parallel_research %}
+    <form method="POST" action="/project/{{ project.project_id }}/phase-2">
+        <button type="submit" class="btn btn-primary">▶ Phase 2 · 병렬 리서치 시작</button>
+        <small class="warn">⏱️ 이 단계는 수십 초 ~ 수 분 걸릴 수 있습니다.</small>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+
+{# Phase 2 결과 #}
+{% if artifact.parallel_research %}
+<section class="phase-card">
+    <h3>Phase 2 · 병렬 리서치</h3>
+    {% set pr = artifact.parallel_research %}
+    <div class="stats">
+        {% set total_st = pr|length %}
+        {% set ok_st = 0 %}
+        {% for st, adapters in pr.items() %}
+          {% for adapter_name, adapter_res in adapters.items() %}
+            {% if adapter_res.status == "success" %}
+              {% set ok_st = ok_st + 1 %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        <span>서브주제: {{ total_st }}개</span>
+    </div>
+    <details>
+        <summary>리서치 상세 보기</summary>
+        {% for subtopic, adapters in pr.items() %}
+        <div class="research-subtopic">
+            <h4>{{ subtopic }}</h4>
+            <ul>
+                {% for adapter_name, adapter_res in adapters.items() %}
+                <li class="adapter-{{ adapter_res.status }}">
+                    <strong>{{ adapter_name }}</strong> — {{ adapter_res.status }}
+                    {% if adapter_res.error %}<em>({{ adapter_res.error }})</em>{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endfor %}
+    </details>
+
+    {% if not artifact.target_doc %}
+    <form method="POST" action="/project/{{ project.project_id }}/phase-3">
+        <button type="submit" class="btn btn-primary">▶ Phase 3 · 2문서 합성</button>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+
+{# Phase 3 결과 #}
+{% if artifact.target_doc %}
+<section class="phase-card">
+    <h3>Phase 3 · 2문서 합성 완료</h3>
+    {% if artifact.base_info_doc %}
+    <details>
+        <summary>기반정보 문서 (3a)</summary>
+        <div class="doc-preview">{{ artifact.base_info_doc.document[:500] }}...</div>
+    </details>
+    {% endif %}
+    <details open>
+        <summary>목표 산출물 초안 (3b)</summary>
+        <div class="doc-preview">{{ artifact.target_doc.document[:1000] }}...</div>
+    </details>
+
+    {% if not artifact.cross_audit_v4 %}
+    <div class="action-group">
+        <form method="POST" action="/project/{{ project.project_id }}/phase-4">
+            <button type="submit" class="btn btn-primary">▶ Phase 4 · AI 교차 감사 (권장)</button>
+            <small class="warn">💰 비용 증가 (3감사관 + 통합 LLM). 30~60초 소요.</small>
+        </form>
+        <p class="or-divider">또는 감사 건너뛰기:</p>
+        <a href="/project/{{ project.project_id }}/phase-5" class="btn btn-secondary">Phase 5로 건너뛰기</a>
+    </div>
+    {% endif %}
+</section>
+{% endif %}
+
+{# Phase 4 결과 #}
+{% if artifact.cross_audit_v4 %}
+<section class="phase-card">
+    <h3>Phase 4 · AI 교차 감사</h3>
+    {% set audit = artifact.cross_audit_v4 %}
+    <div class="meta">
+        상태: <strong>{{ audit.status }}</strong>
+        · 성공 감사관: {{ audit.audits|selectattr("1.status", "equalto", "success")|list|length }}/3
+    </div>
+    {% if audit.audits %}
+    <details>
+        <summary>감사관 피드백 상세</summary>
+        {% for name, a in audit.audits.items() %}
+        <div class="auditor-block auditor-{{ a.status }}">
+            <h4>{{ name }} ({{ a.model }})</h4>
+            {% if a.status == "success" %}
+            <pre class="feedback">{{ a.feedback[:500] }}...</pre>
+            {% else %}
+            <em>실패: {{ a.error }}</em>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </details>
+    {% endif %}
+
+    <a href="/project/{{ project.project_id }}/phase-5" class="btn btn-primary">▶ Phase 5 · 사용자 검수로 이동</a>
+</section>
+{% endif %}
+
+{% endblock %}

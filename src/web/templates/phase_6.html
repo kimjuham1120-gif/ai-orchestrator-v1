@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Phase 6 · 트랙 결정 — {{ project.title }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <a href="/project/{{ project.project_id }}" class="breadcrumb">← {{ project.title }}</a>
+    <h2>Phase 6 · 트랙 전환 결정</h2>
+    <p class="lead">
+        문서가 확정되었습니다. 이제 어떻게 진행할까요?
+    </p>
+</section>
+
+{% if target_doc %}
+<section class="phase-card">
+    <h3>확정된 문서 (미리보기)</h3>
+    <pre class="doc-preview">{{ target_doc.document[:800] }}...</pre>
+</section>
+{% endif %}
+
+<section class="phase-card decision-section">
+    <h3>다음 행동 선택</h3>
+
+    <form method="POST" action="/project/{{ project.project_id }}/phase-6" class="decision-form">
+        <div class="decision-option">
+            <button type="submit" name="decision" value="document_done" class="btn btn-success btn-large">
+                📄 문서 완료
+            </button>
+            <p>현재 문서로 프로젝트 종료. 다운로드/공유 가능한 결과물로 확정합니다.</p>
+        </div>
+
+        <div class="decision-option">
+            <button type="submit" name="decision" value="app_dev" class="btn btn-primary btn-large">
+                🔧 앱개발로 진입
+            </button>
+            <p>
+                문서를 기반으로 <strong>실제 코드 구현</strong>을 진행합니다.<br>
+                Phase 7: planner → builder → review → 승인 → Cursor 실행 → 검증 → finalize
+            </p>
+        </div>
+
+        <div class="decision-option">
+            <button type="submit" name="decision" value="cancel" class="btn btn-secondary btn-large">
+                ✖ 취소
+            </button>
+            <p>프로젝트를 중단하고 종료합니다.</p>
+        </div>
+    </form>
+</section>
+{% endblock %}

@@ -1,0 +1,420 @@
+/* AI Orchestrator v4 — 최소 MVP 스타일 */
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", sans-serif;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: #f7f7f8;
+}
+
+.container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+/* 헤더 */
+.site-header {
+    background: #1a1a1a;
+    color: #fff;
+    padding: 16px 0;
+    border-bottom: 3px solid #0066cc;
+}
+
+.site-header .container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.site-header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.site-header h1 a {
+    color: #fff;
+    text-decoration: none;
+}
+
+.site-header nav a {
+    color: #ccc;
+    text-decoration: none;
+    margin-left: 24px;
+    font-size: 14px;
+}
+
+.site-header nav a:hover { color: #fff; }
+
+/* 푸터 */
+.site-footer {
+    margin-top: 60px;
+    padding: 20px 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* 헤로/페이지 헤더 */
+.hero, .page-header, .project-header {
+    padding: 32px 0 24px;
+    border-bottom: 1px solid #e0e0e0;
+    margin-bottom: 24px;
+}
+
+.hero h2, .page-header h2, .project-header h2 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 700;
+}
+
+.lead { color: #555; margin: 8px 0 0; }
+
+.breadcrumb {
+    display: inline-block;
+    color: #0066cc;
+    text-decoration: none;
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+/* 카드 */
+.phase-card, .info-card, .form-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 20px;
+}
+
+.phase-card h3, .info-card h3 {
+    margin-top: 0;
+    font-size: 18px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #eee;
+}
+
+/* 폼 */
+.form-card label, .phase-card label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 8px;
+    margin-top: 12px;
+}
+
+.form-card textarea, .phase-card textarea,
+.form-card input[type="text"], .phase-card input[type="text"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 14px;
+}
+
+.form-card textarea:focus, .phase-card textarea:focus,
+.form-card input:focus, .phase-card input:focus {
+    outline: none;
+    border-color: #0066cc;
+    box-shadow: 0 0 0 2px rgba(0,102,204,0.2);
+}
+
+.form-actions {
+    margin-top: 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+/* 버튼 */
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    text-align: center;
+    transition: background 0.15s;
+}
+
+.btn-primary { background: #0066cc; color: #fff; }
+.btn-primary:hover { background: #0055aa; }
+
+.btn-success { background: #28a745; color: #fff; }
+.btn-success:hover { background: #218838; }
+
+.btn-secondary { background: #6c757d; color: #fff; }
+.btn-secondary:hover { background: #5a6268; }
+
+.btn-large {
+    padding: 14px 28px;
+    font-size: 16px;
+}
+
+/* 알림 */
+.alert {
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.alert-error { background: #fee; border: 1px solid #fcc; color: #900; }
+
+/* 메타/배지 */
+.meta, .project-meta { color: #666; font-size: 13px; }
+
+.meta strong { color: #1a1a1a; }
+
+.project-meta {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.badge {
+    display: inline-block;
+    padding: 3px 10px;
+    background: #e7f3ff;
+    color: #0066cc;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.badge-in_progress { background: #fff3cd; color: #856404; }
+.badge-completed { background: #d4edda; color: #155724; }
+.badge-blocked, .badge-cancelled { background: #f8d7da; color: #721c24; }
+
+code {
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+/* 판정 결과 */
+.verdict {
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.verdict-possible { background: #d4edda; color: #155724; }
+.verdict-out_of_scope { background: #f8d7da; color: #721c24; }
+.verdict-ambiguous { background: #fff3cd; color: #856404; }
+
+.verdict strong { display: inline-block; margin-right: 12px; }
+
+/* 리스트 */
+.subtopic-list {
+    padding-left: 20px;
+}
+
+.subtopic-list li {
+    padding: 4px 0;
+}
+
+/* 감사관 블록 */
+.auditor-block {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 12px;
+    margin: 8px 0;
+}
+
+.auditor-block h4 {
+    margin: 0 0 8px;
+    font-size: 14px;
+}
+
+.auditor-success { border-left: 4px solid #28a745; }
+.auditor-failed { border-left: 4px solid #dc3545; }
+
+.adapter-success { color: #28a745; }
+.adapter-failed { color: #dc3545; }
+
+.feedback, .doc-preview, .doc-full {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 12px;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.doc-full { max-height: none; }
+
+/* 경고 메시지 */
+.warn { color: #856404; font-size: 12px; }
+
+.note {
+    background: #fff3cd;
+    border: 1px solid #ffeaa7;
+    padding: 10px 14px;
+    border-radius: 4px;
+    margin-top: 8px;
+    color: #856404;
+    font-size: 14px;
+}
+
+/* 버전 이력 */
+.version-list {
+    list-style: none;
+    padding: 0;
+}
+
+.version-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.feedback-applied {
+    color: #555;
+    font-size: 13px;
+    margin-top: 4px;
+}
+
+/* 결정 버튼 섹션 */
+.decision-section .decision-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.decision-option {
+    padding: 16px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+}
+
+.decision-option p {
+    margin: 8px 0 0;
+    color: #666;
+    font-size: 14px;
+}
+
+.or-divider {
+    text-align: center;
+    color: #888;
+    margin: 16px 0 8px;
+    font-size: 13px;
+}
+
+.action-group {
+    margin-top: 16px;
+}
+
+.confirm-section {
+    background: #f0f8ff;
+    border-color: #0066cc;
+}
+
+/* 프로젝트 리스트 */
+.project-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.project-item {
+    display: block;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 16px 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s;
+}
+
+.project-item:hover { border-color: #0066cc; }
+
+.project-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.project-item-header h3 { margin: 0; font-size: 16px; }
+
+.project-item-meta {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: #666;
+    flex-wrap: wrap;
+}
+
+.project-item-id { font-size: 12px; color: #999; margin-top: 4px; }
+
+/* 빈 상태 */
+.empty-state {
+    padding: 40px;
+    text-align: center;
+    color: #888;
+}
+
+/* 리서치 서브토픽 */
+.research-subtopic {
+    padding: 12px;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.research-subtopic h4 { margin: 0 0 8px; font-size: 14px; }
+
+.research-subtopic ul { margin: 0; padding-left: 20px; font-size: 13px; }
+
+/* 상세 details */
+details {
+    margin: 12px 0;
+}
+
+details summary {
+    cursor: pointer;
+    padding: 8px 0;
+    font-weight: 600;
+    color: #0066cc;
+}
+
+details[open] summary {
+    margin-bottom: 8px;
+}
+
+/* 통계 */
+.stats {
+    display: flex;
+    gap: 20px;
+    padding: 12px;
+    background: #f8f9fa;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+/* pre */
+pre {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 12px;
+    max-height: 300px;
+}

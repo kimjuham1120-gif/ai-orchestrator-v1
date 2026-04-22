@@ -135,27 +135,6 @@ class TestBuilderConfig:
 
 
 # ===========================================================================
-# document_config 테스트
-# ===========================================================================
-
-class TestDocumentConfig:
-    def test_default_model(self, monkeypatch):
-        monkeypatch.delenv("OPENROUTER_DOC_MODEL", raising=False)
-        from src.document.document_config import get_doc_model, DEFAULT_DOC_MODEL
-        assert get_doc_model() == DEFAULT_DOC_MODEL
-
-    def test_env_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_DOC_MODEL", "anthropic/claude-sonnet-4-5")
-        from src.document.document_config import get_doc_model
-        assert get_doc_model() == "anthropic/claude-sonnet-4-5"
-
-    def test_default_is_openrouter_auto(self, monkeypatch):
-        monkeypatch.delenv("OPENROUTER_DOC_MODEL", raising=False)
-        from src.document.document_config import DEFAULT_DOC_MODEL
-        assert DEFAULT_DOC_MODEL == "openrouter/auto"
-
-
-# ===========================================================================
 # reviewer_config 테스트
 # ===========================================================================
 
@@ -186,17 +165,14 @@ class TestRoleModelIsolation:
     def test_each_role_uses_own_env(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_PLANNER_MODEL", "anthropic/claude-sonnet-4-5")
         monkeypatch.setenv("OPENROUTER_BUILDER_MODEL", "openai/gpt-4o")
-        monkeypatch.setenv("OPENROUTER_DOC_MODEL", "google/gemini-pro")
         monkeypatch.setenv("OPENROUTER_REVIEWER_MODEL", "openai/gpt-4o-mini")
 
         from src.planner.planner_config import get_planner_model
         from src.builder.builder_config import get_builder_model
-        from src.document.document_config import get_doc_model
         from src.reviewer.reviewer_config import get_reviewer_model
 
         assert get_planner_model() == "anthropic/claude-sonnet-4-5"
         assert get_builder_model() == "openai/gpt-4o"
-        assert get_doc_model() == "google/gemini-pro"
         assert get_reviewer_model() == "openai/gpt-4o-mini"
 
     def test_planner_override_does_not_affect_builder(self, monkeypatch):
@@ -212,15 +188,13 @@ class TestRoleModelIsolation:
     def test_all_defaults_are_consistent(self, monkeypatch):
         """모든 역할의 기본값이 openrouter/auto로 통일."""
         for env in ["OPENROUTER_PLANNER_MODEL", "OPENROUTER_BUILDER_MODEL",
-                    "OPENROUTER_DOC_MODEL", "OPENROUTER_REVIEWER_MODEL"]:
+                    "OPENROUTER_REVIEWER_MODEL"]:
             monkeypatch.delenv(env, raising=False)
 
         from src.planner.planner_config import DEFAULT_PLANNER_MODEL
         from src.builder.builder_config import DEFAULT_BUILDER_MODEL
-        from src.document.document_config import DEFAULT_DOC_MODEL
         from src.reviewer.reviewer_config import DEFAULT_REVIEWER_MODEL
 
         assert DEFAULT_PLANNER_MODEL == "openrouter/auto"
         assert DEFAULT_BUILDER_MODEL == "openrouter/auto"
-        assert DEFAULT_DOC_MODEL == "openrouter/auto"
         assert DEFAULT_REVIEWER_MODEL == "openrouter/auto"

@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block title %}Phase 7 · 앱개발 — {{ project.title }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <a href="/project/{{ project.project_id }}" class="breadcrumb">← {{ project.title }}</a>
+    <h2>Phase 7 · 앱개발 실행</h2>
+</section>
+
+{# Phase 7 아직 시작 안 함 #}
+{% if not phase_7_artifact or not phase_7_artifact.run_id %}
+<section class="phase-card">
+    <h3>Phase 7 시작</h3>
+    <p>
+        Phase 6에서 앱개발 트랙을 선택했습니다.<br>
+        Phase 7을 시작하면 planner → builder → review_gate → approval_prepare 까지 실행됩니다.
+    </p>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/start">
+        <button type="submit" class="btn btn-primary btn-large">▶ Phase 7 시작</button>
+        <small class="warn">⏱️ 약 30초 ~ 2분 소요</small>
+    </form>
+</section>
+
+{% else %}
+
+{% set p7 = phase_7_artifact %}
+
+<section class="phase-card">
+    <h3>Phase 7 진행 상태</h3>
+    <div class="meta">
+        <div>run_id: <code>{{ p7.run_id }}</code></div>
+        <div>run_status: <strong>{{ p7.run_status }}</strong></div>
+    </div>
+</section>
+
+{# 1. Plan + Builder 결과 #}
+{% if p7.plan %}
+<section class="phase-card">
+    <h3>계획 (Planner)</h3>
+    <details>
+        <summary>{{ p7.plan|length }}단계 계획 보기</summary>
+        <pre>{{ p7.plan|tojson(indent=2) }}</pre>
+    </details>
+</section>
+{% endif %}
+
+{% if p7.builder_output %}
+<section class="phase-card">
+    <h3>빌더 출력 (Builder)</h3>
+    <details>
+        <summary>파일 {{ p7.builder_output|length }}개 보기</summary>
+        <pre>{{ p7.builder_output|tojson(indent=2) }}</pre>
+    </details>
+</section>
+{% endif %}
+
+{% if p7.reviewer_feedback %}
+<section class="phase-card">
+    <h3>리뷰 피드백</h3>
+    <ul>
+        {% for fb in p7.reviewer_feedback %}
+        <li>{{ fb }}</li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+
+{# 2. 승인 단계 #}
+{% if p7.run_status == "waiting_approval" and p7.approval_status == "pending" %}
+<section class="phase-card decision-section">
+    <h3>승인 필요</h3>
+    <p>위 계획과 빌더 출력을 검토한 뒤 승인/거절을 결정하세요.</p>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/approval" class="decision-form">
+        <input type="hidden" name="run_id" value="{{ p7.run_id }}">
+        <div class="decision-option">
+            <button type="submit" name="decision" value="approve" class="btn btn-success">✓ 승인</button>
+        </div>
+        <div class="decision-option">
+            <button type="submit" name="decision" value="reject" class="btn btn-secondary">✖ 거절</button>
+        </div>
+    </form>
+</section>
+{% endif %}
+
+{# 3. 패킷 생성 단계 #}
+{% if p7.approval_status == "approved" and not p7.packet_path %}
+<section class="phase-card">
+    <h3>실행 패킷 생성</h3>
+    <p>Cursor에게 전달할 실행 패킷을 생성합니다.</p>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/packet">
+        <input type="hidden" name="run_id" value="{{ p7.run_id }}">
+        <button type="submit" class="btn btn-primary">패킷 생성</button>
+    </form>
+</section>
+{% endif %}
+
+{# 4. 패킷 경로 표시 + 실행 결과 입력 #}
+{% if p7.packet_path %}
+<section class="phase-card">
+    <h3>Cursor 실행</h3>
+    <p>아래 패킷을 Cursor Background Agent에 전달해 실행한 뒤, 결과를 입력해주세요.</p>
+    <div class="meta">패킷 경로: <code>{{ p7.packet_path }}</code></div>
+</section>
+
+{% if not p7.execution_result %}
+<section class="phase-card">
+    <h3>실행 결과 입력</h3>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/execution-result">
+        <input type="hidden" name="run_id" value="{{ p7.run_id }}">
+
+        <label for="changed_files">변경된 파일 (쉼표 구분)</label>
+        <input type="text" id="changed_files" name="changed_files"
+               placeholder="src/auth.py, tests/test_auth.py">
+
+        <label for="test_results">테스트 결과</label>
+        <input type="text" id="test_results" name="test_results"
+               placeholder="3 passed, 0 failed">
+
+        <label for="run_log">실행 로그</label>
+        <textarea id="run_log" name="run_log" rows="4"
+                  placeholder="Cursor Background Agent 로그"></textarea>
+
+        <button type="submit" class="btn btn-primary">결과 제출</button>
+    </form>
+</section>
+{% endif %}
+{% endif %}
+
+{# 5. 검증 단계 #}
+{% if p7.execution_result and not p7.result_verification %}
+<section class="phase-card">
+    <h3>검증 실행</h3>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/verification">
+        <input type="hidden" name="run_id" value="{{ p7.run_id }}">
+        <button type="submit" class="btn btn-primary">▶ 검증</button>
+    </form>
+</section>
+{% endif %}
+
+{# 6. 검증 결과 #}
+{% if p7.result_verification %}
+<section class="phase-card">
+    <h3>검증 결과</h3>
+    <div class="verdict verdict-{{ 'possible' if p7.result_verification.passed else 'out_of_scope' }}">
+        <strong>{{ "✓ 통과" if p7.result_verification.passed else "✖ 실패" }}</strong>
+    </div>
+    {% if p7.result_verification.issues %}
+    <ul>
+        {% for issue in p7.result_verification.issues %}
+        <li>{{ issue }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if p7.result_verification.passed and not p7.final_summary %}
+    <form method="POST" action="/project/{{ project.project_id }}/phase-7/finalize">
+        <input type="hidden" name="run_id" value="{{ p7.run_id }}">
+        <button type="submit" class="btn btn-success">▶ 최종 요약 생성 (Finalize)</button>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+
+{# 7. 최종 요약 #}
+{% if p7.final_summary %}
+<section class="phase-card">
+    <h3>✓ 프로젝트 완료</h3>
+    <pre class="doc-full">{{ p7.final_summary }}</pre>
+</section>
+{% endif %}
+
+{% endif %}
+{% endblock %}

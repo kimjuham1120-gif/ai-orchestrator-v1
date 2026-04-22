@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Phase 5 · 검수 — {{ project.title }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <a href="/project/{{ project.project_id }}" class="breadcrumb">← {{ project.title }}</a>
+    <h2>Phase 5 · 사용자 검수</h2>
+    <p class="lead">
+        현재 문서를 검토하고 피드백을 주세요.<br>
+        피드백을 반영한 새 버전이 생성됩니다. 만족하면 "확정" 버튼으로 다음 단계로.
+    </p>
+</section>
+
+<section class="phase-card">
+    <h3>현재 문서 (최신)</h3>
+    {% if target_doc and target_doc.document %}
+    <pre class="doc-full">{{ target_doc.document }}</pre>
+    <div class="meta">생성 시각: {{ target_doc.created_at }}</div>
+    {% else %}
+    <p class="warn">문서가 없습니다. Phase 3을 먼저 실행해주세요.</p>
+    {% endif %}
+</section>
+
+{% if target_doc and target_doc.document %}
+<section class="phase-card">
+    <h3>피드백 입력</h3>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-5/feedback">
+        <label for="user_feedback">개선하고 싶은 부분을 구체적으로 적어주세요</label>
+        <textarea
+            id="user_feedback"
+            name="user_feedback"
+            rows="6"
+            placeholder="예) 재무 계획 섹션이 약해. 연도별 매출 추정치를 추가해줘.
+예) 경쟁사 분석을 2곳 이상 구체적으로 넣어줘."
+            required
+        ></textarea>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">피드백 반영 (새 버전 생성)</button>
+            <small class="warn">⏱️ 약 20~60초 소요</small>
+        </div>
+    </form>
+</section>
+
+<section class="phase-card confirm-section">
+    <h3>또는 현재 버전으로 확정</h3>
+    <p>더 이상 수정할 부분이 없으면 확정하세요. Phase 6(트랙 결정)으로 넘어갑니다.</p>
+    <form method="POST" action="/project/{{ project.project_id }}/phase-5/confirm">
+        <button type="submit" class="btn btn-success">✓ 최종 확정</button>
+    </form>
+</section>
+{% endif %}
+
+{# 버전 이력 #}
+{% if doc_versions %}
+<section class="phase-card">
+    <h3>버전 이력 ({{ doc_versions|length }}개)</h3>
+    {% set recent = doc_versions[-10:] %}
+    <ul class="version-list">
+        {% for v in recent|reverse %}
+        <li class="version-item">
+            <div>
+                <strong>v{{ v.version }}</strong>
+                <span class="meta">{{ v.created_at }}</span>
+            </div>
+            {% if v.feedback_applied %}
+            <div class="feedback-applied">피드백: {{ v.feedback_applied }}</div>
+            {% else %}
+            <div class="feedback-applied"><em>초안 (Phase 3 결과)</em></div>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% if doc_versions|length > 10 %}
+    <small class="meta">최근 10개만 표시 중 (전체 {{ doc_versions|length }}개 저장됨)</small>
+    {% endif %}
+</section>
+{% endif %}
+{% endblock %}

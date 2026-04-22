@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AI Orchestrator v4{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <h1><a href="/">AI Orchestrator v4</a></h1>
+            <nav>
+                <a href="/">새 프로젝트</a>
+                <a href="/projects">프로젝트 목록</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        {% if error %}
+        <div class="alert alert-error">
+            <strong>오류:</strong> {{ error }}
+        </div>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <small>v4.0.0 · 7-Phase + Phase 0.5 워크플로우</small>
+        </div>
+    </footer>
+</body>
+</html>
