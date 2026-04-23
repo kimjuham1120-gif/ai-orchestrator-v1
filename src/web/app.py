@@ -34,6 +34,19 @@ import os
 from pathlib import Path
 from typing import Optional
 
+# ---------------------------------------------------------------------------
+# .env 자동 로드 (Step 13 후속 — uvicorn 기동 시 API 키 주입)
+# 반드시 os.environ.get(...) 호출 전에 실행되어야 함.
+# python-dotenv 미설치 환경에서도 조용히 건너뜀.
+# ---------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+    # 프로젝트 루트의 .env를 찾아 로드 (이미 환경변수로 설정된 값은 덮어쓰지 않음)
+    _ROOT = Path(__file__).resolve().parent.parent.parent
+    load_dotenv(dotenv_path=_ROOT / ".env", override=False)
+except ImportError:
+    pass
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
