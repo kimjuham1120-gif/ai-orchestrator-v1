@@ -1,32 +1,19 @@
 """
-src/research_v2/perplexity_adapter.py — Perplexity Sonar Deep Research 어댑터.
+src/research_v2/perplexity_adapter.py — Perplexity 어댑터 (듀얼 모드).
 
 벤더: Perplexity AI
-모델: sonar-deep-research
 API: https://api.perplexity.ai/chat/completions (OpenAI 호환)
 
-특징:
-  - 자율 다단계 검색 + 종합 리서치
-  - citations 배열로 소스 URL 반환
-  - 소요 시간: 3~8분 (기본 타임아웃 600초)
-  - 가격: $2/1M input + $8/1M output + $5/1000 검색
+모드:
+  - "web_search"   (기본): sonar-pro, 60초 타임아웃, 빠른 일반 웹검색
+  - "deep_research":       sonar-deep-research, 600초, 자율 다단계 리서치
 
 환경변수:
   PERPLEXITY_API_KEY — 필수
 
-응답 포맷 (Perplexity):
-  {
-    "choices": [{"message": {"content": "...보고서..."}}],
-    "citations": ["https://a.com", "https://b.com", ...],
-    "usage": {
-      "prompt_tokens": 120,
-      "completion_tokens": 3500,
-      "total_tokens": 3620,
-      "num_search_queries": 28  # Deep Research 특수 필드 (있으면)
-    }
-  }
-
-주: citations 는 URL만 배열. 제목/스니펫은 별도 제공 안 함 (주의).
+가격:
+  sonar-pro:             $3/1M input, $15/1M output
+  sonar-deep-research:   $2/1M input, $8/1M output + $5/1000 searches
 """
 from __future__ import annotations
 
@@ -45,25 +32,56 @@ from src.research_v2.base import (
 
 
 # ---------------------------------------------------------------------------
-# 상수
+# 모드 상수
 # ---------------------------------------------------------------------------
 
+MODE_WEB_SEARCH = "web_search"
+MODE_DEEP_RESEARCH = "deep_research"
+_VALID_MODES = {MODE_WEB_SEARCH, MODE_DEEP_RESEARCH}
+
 _API_URL = "https://api.perplexity.ai/chat/completions"
-_MODEL_ID = "sonar-deep-research"
 
-# 가격 (per 1M tokens)
-_INPUT_RATE_PER_M = 2.0
-_OUTPUT_RATE_PER_M = 8.0
+# 모드별 설정
+_MODE_CONFIG = {
+    MODE_WEB_SEARCH: {
+        "model": "sonar-pro",
+        "timeout": 60.0,
+        "input_rate_per_m": 3.0,
+        "output_rate_per_m": 15.0,
+        "has_search_cost": False,
+    },
+    MODE_DEEP_RESEARCH: {
+        "model": "sonar-deep-research",
+        "timeout": 600.0,
+        "input_rate_per_m": 2.0,
+        "output_rate_per_m": 8.0,
+        "has_search_cost": True,  # $5/1000 searches
+    },
+}
 
-# 검색 1000건당 $5
 _SEARCH_RATE_PER_1000 = 5.0
 
 
-class PerplexityDeepResearchAdapter(ResearchAdapter):
-    """Perplexity Sonar Deep Research 어댑터."""
+class PerplexityResearchAdapter(ResearchAdapter):
+    """Perplexity 어댑터 — web_search 또는 deep_research 모드."""
 
-    name = "perplexity_sonar_dr"
-    default_timeout = 600.0  # Deep Research는 오래 걸림
+    name = "perplexity_research"
+
+    def __init__(self, mode: str = MODE_WEB_SEARCH):
+        if mode not in _VALID_MODES:
+            raise ValueError(
+                f"invalid mode '{mode}'. must be one of {sorted(_VALID_MODES)}"
+            )
+        self.mode = mode
+        self._config = _MODE_CONFIG[mode]
+
+    # ---------------------------------------------------------------------
+    # 기본 타임아웃 — 모드별
+    # ---------------------------------------------------------------------
+
+    @property
+    def default_timeout(self) -> float:
+        return self._config["timeout"]
 
     # ---------------------------------------------------------------------
     # 가용성
@@ -79,9 +97,10 @@ class PerplexityDeepResearchAdapter(ResearchAdapter):
 
     def _do_research(self, query: str, timeout: float) -> ResearchResult:
         api_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+        model = self._config["model"]
 
         payload = {
-            "model": _MODEL_ID,
+            "model": model,
             "messages": [
                 {
                     "role": "system",
@@ -105,62 +124,58 @@ class PerplexityDeepResearchAdapter(ResearchAdapter):
             timeout=timeout,
         )
 
-        # HTTP 4xx / 5xx → 실패
         if response.status_code >= 400:
             return ResearchResult(
                 adapter_name=self.name,
                 status=STATUS_FAILED,
-                model=_MODEL_ID,
+                model=model,
                 error=f"HTTP {response.status_code}: {response.text[:200]}",
             )
 
         body = response.json()
-        return self._parse_response(body)
+        return self._parse_response(body, model)
 
     # ---------------------------------------------------------------------
     # 응답 파싱
     # ---------------------------------------------------------------------
 
-    def _parse_response(self, body: Dict[str, Any]) -> ResearchResult:
+    def _parse_response(self, body: Dict[str, Any], model: str) -> ResearchResult:
         """Perplexity 응답 → ResearchResult."""
-        # 보고서 추출
         try:
             report = body["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError):
             return ResearchResult(
                 adapter_name=self.name,
                 status=STATUS_FAILED,
-                model=_MODEL_ID,
+                model=model,
                 error="malformed response: no choices[0].message.content",
                 raw_meta={"body_keys": list(body.keys()) if isinstance(body, dict) else []},
             )
 
-        # 인용 파싱
         citations = _parse_citations(body.get("citations"))
 
-        # 비용 계산
         usage = body.get("usage") or {}
-        cost = _calculate_cost(usage)
+        cost = _calculate_cost(usage, self._config)
 
         return ResearchResult(
             adapter_name=self.name,
             status=STATUS_SUCCESS,
             report=report,
             citations=citations,
-            model=_MODEL_ID,
+            model=model,
             cost_usd=cost,
-            raw_meta={"usage": usage},
+            raw_meta={"usage": usage, "mode": self.mode},
         )
 
 
 # ---------------------------------------------------------------------------
-# 헬퍼 (모듈 레벨 — 테스트 용이)
+# 헬퍼 (모듈 레벨)
 # ---------------------------------------------------------------------------
 
 def _parse_citations(raw: Any) -> List[ResearchCitation]:
     """
-    Perplexity citations는 URL 문자열 배열.
-    다만 일부 버전에서 dict도 반환할 수 있어 둘 다 처리.
+    Perplexity citations 파싱.
+    - URL 문자열 배열 또는 dict 배열 둘 다 지원.
     """
     if not raw or not isinstance(raw, list):
         return []
@@ -182,16 +197,12 @@ def _parse_citations(raw: Any) -> List[ResearchCitation]:
     return result
 
 
-def _calculate_cost(usage: Dict[str, Any]) -> float:
+def _calculate_cost(usage: Dict[str, Any], config: Dict[str, Any]) -> float:
     """
-    usage 기반 비용 계산 (USD).
+    모드별 가격 테이블로 비용 계산.
 
-    구성:
-      입력 토큰 × $2/1M
-      + 출력 토큰 × $8/1M
-      + 검색 횟수 × $5/1000
-
-    방어적: 음수/None/비숫자 → 0 처리.
+    web_search:    input + output만
+    deep_research: input + output + num_search_queries × $5/1000
     """
     if not isinstance(usage, dict):
         return 0.0
@@ -204,11 +215,30 @@ def _calculate_cost(usage: Dict[str, Any]) -> float:
 
     prompt_tokens = _safe_int(usage.get("prompt_tokens"))
     completion_tokens = _safe_int(usage.get("completion_tokens"))
-    num_searches = _safe_int(usage.get("num_search_queries"))
 
     cost = (
-        (prompt_tokens * _INPUT_RATE_PER_M) / 1_000_000.0
-        + (completion_tokens * _OUTPUT_RATE_PER_M) / 1_000_000.0
-        + (num_searches * _SEARCH_RATE_PER_1000) / 1000.0
+        (prompt_tokens * config["input_rate_per_m"]) / 1_000_000.0
+        + (completion_tokens * config["output_rate_per_m"]) / 1_000_000.0
     )
+
+    if config["has_search_cost"]:
+        num_searches = _safe_int(usage.get("num_search_queries"))
+        cost += (num_searches * _SEARCH_RATE_PER_1000) / 1000.0
+
     return round(cost, 6)
+
+
+# ---------------------------------------------------------------------------
+# 하위호환 — 기존 이름 유지
+# ---------------------------------------------------------------------------
+
+class PerplexityDeepResearchAdapter(PerplexityResearchAdapter):
+    """
+    하위호환 별칭 — deep_research 모드로 고정.
+    기존 코드에서 이 이름으로 import하던 것 보호.
+    """
+
+    name = "perplexity_sonar_dr"
+
+    def __init__(self):
+        super().__init__(mode=MODE_DEEP_RESEARCH)
