@@ -21,6 +21,7 @@ from src.store.artifact_store import (
     utc_now_iso,
 )
 from src.utils.id_generator import generate_run_id, generate_thread_id
+from src.utils.llm_utils import set_llm_context, clear_llm_context
 
 
 # ---------------------------------------------------------------------------
@@ -60,14 +61,24 @@ def handle_phase_0_5(raw_input: str, db_path: str) -> Dict[str, Any]:
     if not text:
         return {"ok": False, "error": "요청이 비어있습니다"}
 
-    # Phase 0.5 실행
+    # 로깅을 위해 ID들을 LLM 호출 전에 생성
+    project_id = _new_project_id()
+    run_id = generate_run_id()
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=run_id,
+        phase="phase_0_5",
+    )
+
+    # Phase 0.5 실행 (내부 call_llm이 자동으로 llm_calls에 기록됨)
     try:
         result = check_feasibility(text)
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 0.5 실행 실패: {exc}"}
 
     # 프로젝트 생성
-    project_id = _new_project_id()
     now = utc_now_iso()
 
     try:
@@ -81,10 +92,10 @@ def handle_phase_0_5(raw_input: str, db_path: str) -> Dict[str, Any]:
             "status": "in_progress" if result.verdict == "possible" else "blocked",
         })
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"프로젝트 저장 실패: {exc}"}
 
     # artifact 저장 (Phase 0.5 결과)
-    run_id = generate_run_id()
     try:
         save_artifact(db_path, {
             "run_id": run_id,
@@ -98,6 +109,8 @@ def handle_phase_0_5(raw_input: str, db_path: str) -> Dict[str, Any]:
     except Exception:
         # artifact 저장 실패해도 프로젝트는 생성됨 — 경고만
         pass
+
+    clear_llm_context()
 
     return {
         "ok": True,
@@ -125,15 +138,25 @@ def handle_phase_1(project_id: str, db_path: str) -> Dict[str, Any]:
     if not project:
         return {"ok": False, "error": f"프로젝트 없음: {project_id}"}
 
+    # 기존 run_id 가져오기 (Phase 0.5에서 생성됨)
+    runs = list_project_runs(db_path, project_id)
+    run_id = runs[0]["run_id"] if runs else None
+
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=run_id,
+        phase="phase_1",
+    )
+
     try:
         result = decompose_request(project["raw_input"])
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 1 실행 실패: {exc}"}
 
     # artifact 업데이트 (같은 project_id의 Phase 0.5 artifact 찾아 업데이트)
-    runs = list_project_runs(db_path, project_id)
     if runs:
-        run_id = runs[0]["run_id"]
         update_artifact(db_path, run_id, {
             "phase": "phase_1",
             "subtopics": result.subtopics,
@@ -141,6 +164,7 @@ def handle_phase_1(project_id: str, db_path: str) -> Dict[str, Any]:
         })
 
     update_project_phase(db_path, project_id, "phase_1")
+    clear_llm_context()
 
     return {
         "ok": True,
@@ -173,6 +197,13 @@ def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
     if not subtopics:
         return {"ok": False, "error": "서브주제 없음 — Phase 1 먼저 실행"}
 
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=runs[0]["run_id"],
+        phase="phase_2",
+    )
+
     try:
         result = run_parallel_research(subtopics)
     except AllSubtopicsFailedError as exc:
@@ -180,8 +211,10 @@ def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
             "phase": "phase_2",
             "run_status": "phase_2_failed",
         })
+        clear_llm_context()
         return {"ok": False, "error": f"모든 리서치 실패: {exc}"}
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 2 실행 실패: {exc}"}
 
     update_artifact(db_path, runs[0]["run_id"], {
@@ -190,6 +223,7 @@ def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
         "run_status": "phase_2_done",
     })
     update_project_phase(db_path, project_id, "phase_2")
+    clear_llm_context()
 
     return {
         "ok": True,
@@ -228,9 +262,17 @@ def handle_phase_3(project_id: str, db_path: str) -> Dict[str, Any]:
     if not research:
         return {"ok": False, "error": "리서치 결과 없음 — Phase 2 먼저 실행"}
 
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase="phase_3",
+    )
+
     try:
         result = synthesize_documents(project["raw_input"], research)
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 3 실행 실패: {exc}"}
 
     update_artifact(db_path, artifact["run_id"], {
@@ -240,6 +282,7 @@ def handle_phase_3(project_id: str, db_path: str) -> Dict[str, Any]:
         "run_status": "phase_3_done" if result.any_success else "phase_3_failed",
     })
     update_project_phase(db_path, project_id, "phase_3")
+    clear_llm_context()
 
     return {
         "ok": result.any_success,
@@ -278,6 +321,13 @@ def handle_phase_4(project_id: str, db_path: str) -> Dict[str, Any]:
 
     base_info_doc = artifact.get("base_info_doc")
 
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase="phase_4",
+    )
+
     try:
         result = run_cross_audit(
             target_doc=target_doc,
@@ -285,6 +335,7 @@ def handle_phase_4(project_id: str, db_path: str) -> Dict[str, Any]:
             base_info_doc=base_info_doc,
         )
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 4 실행 실패: {exc}"}
 
     # synthesized_doc이 있으면 target_doc을 업데이트
@@ -298,6 +349,7 @@ def handle_phase_4(project_id: str, db_path: str) -> Dict[str, Any]:
 
     update_artifact(db_path, artifact["run_id"], updates)
     update_project_phase(db_path, project_id, "phase_4")
+    clear_llm_context()
 
     return {
         "ok": True,  # skipped도 ok (사용자가 OFF 선택 가능)
@@ -344,6 +396,13 @@ def handle_phase_5_feedback(
 
     base_info = artifact.get("base_info_doc")
 
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase="phase_5",
+    )
+
     try:
         result = apply_feedback(
             current_doc=current_doc,
@@ -352,9 +411,11 @@ def handle_phase_5_feedback(
             base_info_doc=base_info,
         )
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 5 실행 실패: {exc}"}
 
     if not result.is_success:
+        clear_llm_context()
         return {"ok": False, "error": result.error or "피드백 적용 실패"}
 
     # 버전 이력 업데이트
@@ -370,6 +431,7 @@ def handle_phase_5_feedback(
         "run_status": "phase_5_active",
     })
     update_project_phase(db_path, project_id, "phase_5")
+    clear_llm_context()
 
     return {
         "ok": True,
@@ -494,6 +556,13 @@ def handle_phase_7_start(project_id: str, db_path: str) -> Dict[str, Any]:
     if not spec:
         return {"ok": False, "error": "deliverable_spec 없음"}
 
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase="phase_7",
+    )
+
     try:
         result = run_phase_7_from_spec(
             deliverable_spec=spec,
@@ -502,9 +571,11 @@ def handle_phase_7_start(project_id: str, db_path: str) -> Dict[str, Any]:
             project_id=project_id,
         )
     except Exception as exc:
+        clear_llm_context()
         return {"ok": False, "error": f"Phase 7 실행 실패: {exc}"}
 
     update_project_phase(db_path, project_id, "phase_7_waiting_approval")
+    clear_llm_context()
 
     return {
         "ok": result.status == "ok",
