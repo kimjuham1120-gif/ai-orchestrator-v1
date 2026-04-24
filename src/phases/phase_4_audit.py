@@ -9,9 +9,9 @@ Phase 4 · AI 교차 감사 (Day 120~)
   - 균형 감사관 (GPT-5.4)             : 편향, 과장, 반대 관점 누락
   - 사실 감사관 (Gemini 3.1 Pro)     : 사실 오류, 출처 빈약
 
-통합 LLM (GPT-5.4):
+통합 LLM (Claude Sonnet 4.6 — Step 14-2 전환):
   - 3감사관과 독립적 시선 (동류 편향 방지)
-  - 사실 정확도 강점
+  - 반복 실행 시 Anthropic 캐싱 90% 할인 활용
   - base_info_doc을 참조해 기반 사실 유지
 
 실행 구조:
@@ -38,7 +38,7 @@ Phase 4 · AI 교차 감사 (Day 120~)
   AUDITOR_STRUCTURE_MODEL=anthropic/claude-opus-4.7
   AUDITOR_BALANCE_MODEL=openai/gpt-5.4
   AUDITOR_FACT_MODEL=google/gemini-3.1-pro-preview
-  AUDITOR_SYNTHESIZER_MODEL=openai/gpt-5.4
+  AUDITOR_SYNTHESIZER_MODEL=anthropic/claude-sonnet-4-6
   AUDITOR_TIMEOUT=90.0
   AUDITOR_MAX_WORKERS=3
 """
@@ -75,7 +75,7 @@ _DEFAULT_MODELS = {
     AUDITOR_FACT:      "google/gemini-3.1-pro-preview",
 }
 
-_SYNTHESIZER_DEFAULT_MODEL = "openai/gpt-5.4"
+_SYNTHESIZER_DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------

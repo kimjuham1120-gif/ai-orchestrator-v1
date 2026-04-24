@@ -1,5 +1,5 @@
 """
-Phase 3 · 2문서 합성 (Day 117~)
+Phase 3 · 2문서 합성 (Day 117~, Step 14-2 모델 전환)
 
 역할: Phase 2 리서치 결과를 받아 2개 문서를 독립 생성.
   - Phase 3a: 기반정보 문서 (base_info_doc) — 리서치 정리, 범용 참조
@@ -23,9 +23,13 @@ Phase 3 · 2문서 합성 (Day 117~)
   - 둘 다 실패 → error 기록 (예외 전파 X, 호출자가 판단)
   - 리서치 결과 없음 → 둘 다 skipped
 
+Step 14-2 변경:
+  - 기본 모델 openai/gpt-5.4 → anthropic/claude-sonnet-4-6
+    (Anthropic 캐싱 90% 할인 활용, GPT-5.4 대비 유사 품질·동등 비용)
+
 환경변수:
   OPENROUTER_API_KEY
-  SYNTHESIS_MODEL        — 기본: openai/gpt-5.4
+  SYNTHESIS_MODEL        — 기본: anthropic/claude-sonnet-4-6
   SYNTHESIS_TIMEOUT      — 기본: 90.0 초
 """
 from __future__ import annotations
@@ -45,7 +49,7 @@ from src.store.artifact_store import utc_now_iso
 # 모델 / 타임아웃 설정
 # ---------------------------------------------------------------------------
 
-SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL", "openai/gpt-5.4")
+SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL", "anthropic/claude-sonnet-4-6")
 
 try:
     SYNTHESIS_TIMEOUT = float(os.environ.get("SYNTHESIS_TIMEOUT", "90.0"))

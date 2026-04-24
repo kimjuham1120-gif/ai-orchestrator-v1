@@ -1,5 +1,5 @@
 """
-Phase 1 · 서브주제 분해 (Day 115~)
+Phase 1 · 서브주제 분해 (Day 115~, Step 14-2 전환)
 
 역할: 사용자 요청을 리서치 가능한 탐색 단위(서브주제)로 분해.
 
@@ -13,28 +13,38 @@ Phase 1 · 서브주제 분해 (Day 115~)
     decided_by: "llm" | "fallback"
     error: Optional[str]         — 실패 시 이유
 
-설계:
-  - LLM 1회 호출 (OpenRouter, JSON 모드)
-  - 규칙 기반 불가 (주제마다 다름)
-  - 실패 시: 원본 요청을 단일 서브주제로 반환 (Phase 2가 최소 1개로 진행 가능하도록)
-  - 중복/빈/초과 자동 정리
+Step 14-2 변경:
+  - 로컬 call_llm 함수 삭제 (src.utils.llm_utils.call_llm과 이름 충돌 해소)
+  - httpx 직접 호출 → call_llm_json 사용 (캐싱 + 재시도)
+  - 기본 모델 Haiku 4.5로 다운그레이드
+  - _parse_response 함수 삭제 (call_llm_json이 파싱 + 재시도 모두 처리)
 
 환경변수:
   OPENROUTER_API_KEY
-  DECOMPOSE_MODEL            — 기본: openai/gpt-5.4-mini
+  DECOMPOSE_MODEL            — 기본: anthropic/claude-haiku-4-5
   DECOMPOSE_TIMEOUT          — 기본: 60.0 초
   DECOMPOSE_MIN_SUBTOPICS    — 기본: 3
   DECOMPOSE_MAX_SUBTOPICS    — 기본: 10
 """
 from __future__ import annotations
 
-from src.utils.llm_utils import call_llm, clean_markdown_wrapper
-
-import json
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+from src.utils.llm_utils import call_llm_json
+
+
+# ---------------------------------------------------------------------------
+# 모델 / 타임아웃 설정
+# ---------------------------------------------------------------------------
+
+DECOMPOSE_MODEL = os.environ.get("DECOMPOSE_MODEL", "anthropic/claude-haiku-4-5")
+
+try:
+    DECOMPOSE_TIMEOUT = float(os.environ.get("DECOMPOSE_TIMEOUT", "60.0"))
+except (ValueError, TypeError):
+    DECOMPOSE_TIMEOUT = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +55,7 @@ from typing import Optional
 class DecomposeResult:
     """Phase 1 서브주제 분해 결과."""
     subtopics: list[str]
-    decided_by: str = "llm"          # "llm" | "fallback"
+    decided_by: str = "llm"
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -57,13 +67,13 @@ class DecomposeResult:
 
 
 # ---------------------------------------------------------------------------
-# 설정
+# 설정 (환경변수 동적 로드)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_MIN = 3
 _DEFAULT_MAX = 10
 _RECOMMENDED_RANGE = "5~8"
-_SUBTOPIC_MAX_LEN = 100  # 하나의 서브주제 최대 글자 수
+_SUBTOPIC_MAX_LEN = 100
 
 
 def _get_min_max() -> tuple[int, int]:
@@ -76,7 +86,6 @@ def _get_min_max() -> tuple[int, int]:
         max_n = int(os.environ.get("DECOMPOSE_MAX_SUBTOPICS", _DEFAULT_MAX))
     except ValueError:
         max_n = _DEFAULT_MAX
-    # 안전 범위
     min_n = max(1, min_n)
     max_n = max(min_n, min(max_n, 20))
     return min_n, max_n
@@ -126,74 +135,39 @@ _LLM_PROMPT = """\
 
 
 # ---------------------------------------------------------------------------
-# LLM 호출
+# 내부 헬퍼 — LLM 호출 (call_llm_json 사용)
 # ---------------------------------------------------------------------------
 
-def call_llm(raw_input: str) -> Optional[list[str]]:
+def _fetch_subtopics(raw_input: str) -> Optional[list[str]]:
     """
     LLM 호출해서 서브주제 리스트 반환.
-    실패 시 None.
+    실패 시 None (파싱 실패, 네트워크 실패, API 키 없음 모두 None).
+
+    주의: 함수명이 call_llm이 아닌 이유는 src.utils.llm_utils.call_llm과 충돌 방지.
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         return None
 
-    model = os.environ.get("DECOMPOSE_MODEL", "openai/gpt-5.4-mini")
-    timeout = float(os.environ.get("DECOMPOSE_TIMEOUT", "60.0"))
+    prompt = _LLM_PROMPT.format(
+        raw_input=raw_input,
+        range=_RECOMMENDED_RANGE,
+    )
 
-    try:
-        import httpx
+    data = call_llm_json(
+        prompt=prompt,
+        model=DECOMPOSE_MODEL,
+        timeout=DECOMPOSE_TIMEOUT,
+    )
 
-        response = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": _LLM_PROMPT.format(
-                            raw_input=raw_input,
-                            range=_RECOMMENDED_RANGE,
-                        ),
-                    }
-                ],
-                "response_format": {"type": "json_object"},
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return _parse_response(content)
-    except Exception:
-        # 실패 시 None 반환 → 호출자가 fallback 처리
+    if data is None or not isinstance(data, dict):
         return None
-
-
-def _parse_response(content: str) -> Optional[list[str]]:
-    """LLM 응답 → 서브주제 리스트. 실패 시 None."""
-    if not content:
-        return None
-
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, ValueError):
-        # 코드 블록 제거 재시도
-        cleaned = re.sub(r"^```(?:json)?\s*", "", content.strip())
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        try:
-            data = json.loads(cleaned)
-        except Exception:
-            return None
 
     subtopics = data.get("subtopics")
     if not isinstance(subtopics, list):
         return None
 
-    # 문자열만 필터링
+    # 문자열만 필터링 (None, int 등 제거)
     return [str(s) for s in subtopics if s]
 
 
@@ -206,7 +180,7 @@ def _sanitize(subtopics: list[str], max_n: int) -> list[str]:
     후처리:
       - 공백 제거
       - 빈 문자열 제거
-      - 중복 제거 (순서 유지)
+      - 중복 제거 (순서 유지, 대소문자 무시)
       - 너무 긴 항목 자르기
       - max_n개로 잘라내기
     """
@@ -218,10 +192,8 @@ def _sanitize(subtopics: list[str], max_n: int) -> list[str]:
         t = s.strip()
         if not t:
             continue
-        # 너무 길면 자르기
         if len(t) > _SUBTOPIC_MAX_LEN:
             t = t[:_SUBTOPIC_MAX_LEN].rstrip() + "…"
-        # 중복 제거 (대소문자 무시)
         key = t.lower()
         if key in seen:
             continue
@@ -247,8 +219,6 @@ def decompose_request(
         result = decompose_request("사업계획서 써줘")
         if len(result.subtopics) >= 3:
             # Phase 2로 진행
-        else:
-            # fallback 상태 — 단일 서브주제로 Phase 2 진행 가능
 
     입력이 비어있거나 매우 짧으면 fallback.
     LLM 호출 실패 시에도 fallback (예외 전파 없음).
@@ -265,10 +235,9 @@ def decompose_request(
         )
 
     # 2. LLM 호출
-    raw_subtopics = call_llm(text)
+    raw_subtopics = _fetch_subtopics(text)
 
     if raw_subtopics is None:
-        # LLM 실패 → 원본 요청을 단일 서브주제로
         return DecomposeResult(
             subtopics=[text[:_SUBTOPIC_MAX_LEN]],
             decided_by="fallback",
@@ -279,14 +248,13 @@ def decompose_request(
     cleaned = _sanitize(raw_subtopics, max_n)
 
     if not cleaned:
-        # LLM이 빈 리스트 또는 전부 무효 → fallback
         return DecomposeResult(
             subtopics=[text[:_SUBTOPIC_MAX_LEN]],
             decided_by="fallback",
             error="LLM 응답에서 유효한 서브주제 없음",
         )
 
-    # 4. 최소 개수 체크 — 부족해도 있는 만큼 반환 (Phase 2는 1개로도 진행 가능)
+    # 4. 최소 개수 체크 — 부족해도 있는 만큼 반환
     return DecomposeResult(
         subtopics=cleaned,
         decided_by="llm",

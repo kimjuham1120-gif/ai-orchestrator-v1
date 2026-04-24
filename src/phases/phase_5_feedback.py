@@ -1,5 +1,5 @@
 """
-Phase 5 · 사용자 검수 루프 (Day 119~)
+Phase 5 · 사용자 검수 루프 (Day 119~, Step 14-2 모델 전환)
 
 역할: Phase 4를 통과한 문서를 사용자에게 보여주고, 피드백 →
       재작성 → 새 버전 축적 사이클을 돌림.
@@ -24,9 +24,13 @@ Phase 5 · 사용자 검수 루프 (Day 119~)
   - 저장 무제한 (DB에 전부)
   - UI는 최근 10개만 표시 (Step 11에서 UI 구현)
 
+Step 14-2 변경:
+  - 기본 모델 openai/gpt-5.4 → anthropic/claude-sonnet-4-6
+    (Anthropic 캐싱 90% 할인 활용, 반복 피드백 루프에 특히 유리)
+
 환경변수:
   OPENROUTER_API_KEY
-  FEEDBACK_MODEL           — 기본: openai/gpt-5.4
+  FEEDBACK_MODEL           — 기본: anthropic/claude-sonnet-4-6
   FEEDBACK_TIMEOUT         — 기본: 90.0 초
 """
 from __future__ import annotations
@@ -45,7 +49,7 @@ from src.store.artifact_store import utc_now_iso
 # 모델 / 타임아웃 설정
 # ---------------------------------------------------------------------------
 
-FEEDBACK_MODEL = os.environ.get("FEEDBACK_MODEL", "openai/gpt-5.4")
+FEEDBACK_MODEL = os.environ.get("FEEDBACK_MODEL", "anthropic/claude-sonnet-4-6")
 
 try:
     FEEDBACK_TIMEOUT = float(os.environ.get("FEEDBACK_TIMEOUT", "90.0"))

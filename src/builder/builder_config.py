@@ -2,20 +2,25 @@
 Builder 모델 설정 — OpenRouter env 기반.
 
 환경변수:
-  OPENROUTER_BUILDER_MODEL     — 기본값: openrouter/auto
+  OPENROUTER_BUILDER_MODEL     — 기본값: anthropic/claude-sonnet-4-6 (Step 14-2)
   OPENROUTER_BUILDER_VERBOSITY — 기본값: high (low/medium/high)
   OPENROUTER_BASE_URL          — 기본값: https://openrouter.ai/api/v1
   OPENROUTER_API_KEY           — 없으면 stub 모드
 
-유료 전환 시:
-  OPENROUTER_BUILDER_MODEL=anthropic/claude-sonnet-4-5
+이전 기본값 openrouter/auto에서 변경 사유:
+  - 예측 가능한 비용 확보
+  - Anthropic 캐싱 90% 할인 활용 (planner와 공통 맥락 캐시 히트)
+  - 모델 편차 제거로 코드 품질 일관성
+
+유료 전환 시 (더 높은 품질 원하면):
+  OPENROUTER_BUILDER_MODEL=anthropic/claude-opus-4.7
   OPENROUTER_BUILDER_VERBOSITY=high
 """
 from __future__ import annotations
 
 import os
 
-DEFAULT_BUILDER_MODEL = "openrouter/auto"
+DEFAULT_BUILDER_MODEL = "anthropic/claude-sonnet-4-6"
 DEFAULT_VERBOSITY = "high"
 
 _ENV_MODEL = "OPENROUTER_BUILDER_MODEL"

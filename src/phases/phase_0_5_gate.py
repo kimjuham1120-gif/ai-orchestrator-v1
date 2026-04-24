@@ -1,5 +1,5 @@
 """
-Phase 0.5 · 처리 가능성 게이트 (Day 114~)
+Phase 0.5 · 처리 가능성 게이트 (Day 114~, Step 14-2 전환)
 
 역할: 사용자 입력이 시스템 범위 안인지 판정.
 
@@ -10,27 +10,38 @@ Phase 0.5 · 처리 가능성 게이트 (Day 114~)
 
 2단계 판정 구조:
   1단계: 규칙 기반 (비용 0, 즉시)
-    - 빈 입력 / 너무 짧음 → ambiguous
-    - 범위 밖 명확 키워드 → out_of_scope
-    - 문서/앱 명확 키워드 → possible
   2단계: LLM 판정 (1단계 미결 시만)
-    - OpenRouter 경량 모델 1회 호출
-    - JSON 응답 파싱
+
+Step 14-2 변경:
+  - httpx 직접 호출 → call_llm_json 사용 (캐싱 + 재시도)
+  - 기본 모델 Haiku 4.5로 다운그레이드
+  - _parse_llm_response 삭제 (call_llm_json이 파싱 + 재시도 모두 처리)
 
 환경변수:
   OPENROUTER_API_KEY         — LLM 판정용 (없으면 규칙 기반만)
-  FEASIBILITY_MODEL          — 기본: openai/gpt-5.4-mini
+  FEASIBILITY_MODEL          — 기본: anthropic/claude-haiku-4-5
   FEASIBILITY_TIMEOUT        — 기본: 30.0 초
 """
 from __future__ import annotations
 
-from src.utils.llm_utils import call_llm, clean_markdown_wrapper
-
-import json
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+from src.utils.llm_utils import call_llm_json
+
+
+# ---------------------------------------------------------------------------
+# 모델 / 타임아웃 설정
+# ---------------------------------------------------------------------------
+
+FEASIBILITY_MODEL = os.environ.get("FEASIBILITY_MODEL", "anthropic/claude-haiku-4-5")
+
+try:
+    FEASIBILITY_TIMEOUT = float(os.environ.get("FEASIBILITY_TIMEOUT", "30.0"))
+except (ValueError, TypeError):
+    FEASIBILITY_TIMEOUT = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +58,10 @@ _ALL_VERDICTS = {VERDICT_POSSIBLE, VERDICT_OUT_OF_SCOPE, VERDICT_AMBIGUOUS}
 @dataclass
 class FeasibilityResult:
     """Phase 0.5 판정 결과."""
-    verdict: str                              # possible / out_of_scope / ambiguous
-    reason: str                               # 판정 이유 (사용자에게 표시 가능)
-    suggested_clarification: Optional[str] = None  # ambiguous일 때 되물을 문구
-    decided_by: str = "rule"                  # "rule" | "llm" | "fallback"
+    verdict: str
+    reason: str
+    suggested_clarification: Optional[str] = None
+    decided_by: str = "rule"
 
     def to_dict(self) -> dict:
         return {
@@ -65,10 +76,8 @@ class FeasibilityResult:
 # 1단계 — 규칙 기반 판정
 # ---------------------------------------------------------------------------
 
-# 빈 입력 / 너무 짧음 (5자 미만)
 _MIN_LENGTH = 5
 
-# 범위 밖 명확 키워드 — scope.md v4 §10 기준
 _OUT_OF_SCOPE_PATTERNS = [
     # 실시간 정보
     (r"(오늘|지금|현재|실시간).*(날씨|기온|온도|비|눈|미세먼지)", "실시간 날씨 정보"),
@@ -76,7 +85,7 @@ _OUT_OF_SCOPE_PATTERNS = [
     (r"(지금|현재|오늘|실시간).*(뉴스|속보|이슈)", "실시간 뉴스"),
     (r"(현재|실시간).*시간", "실시간 시각"),
 
-    # 물리 세계 조작 — 단, 개발 맥락(기능/시스템 등)이 함께 있으면 제외 (후속 possible 패턴이 우선)
+    # 물리 세계 조작
     (r"(택시|우버|배달).*(불러|호출|시켜)", "실시간 이동/배달 호출"),
     (r"(전화|통화).*(걸어|해줘)", "실시간 통신"),
 
@@ -85,7 +94,7 @@ _OUT_OF_SCOPE_PATTERNS = [
     (r"(내|나의|제).*(캘린더|일정|스케줄).*(확인|보여)", "개인 캘린더 접근"),
     (r"(내|나의|제).*(sns|인스타|페북|트위터|카톡)", "SNS 계정 접근"),
 
-    # 창작 예술 (이미지/음성/영상)
+    # 창작 예술
     (r"(그림|이미지|사진|일러스트).*(그려|만들어|생성)", "이미지 생성"),
     (r"(작곡|노래|음악).*(만들어|작곡|생성)", "음악 생성"),
     (r"(음성|목소리|tts).*(만들어|합성|생성)", "음성 합성"),
@@ -102,13 +111,11 @@ _OUT_OF_SCOPE_PATTERNS = [
     (r"같이\s*(게임|롤|오버워치).*(하자|해)", "실시간 게임 상대"),
 ]
 
-# 순수 주문/구매 패턴 (개발 맥락이 아닌 물리 주문) — possible 검사 후 체크
 _PURE_ORDER_PATTERNS = [
     (r"(치킨|피자|커피|음식|식당).*(주문|시켜|배달).*(해줘|해주세요)", "실제 음식 주문"),
     (r"(택시|차).*(불러|예약).*(해줘|해주세요)", "교통 예약"),
 ]
 
-# 명확 문서/앱 키워드 (possible 판정) — out_of_scope보다 먼저 검사
 _POSSIBLE_PATTERNS = [
     # 문서 산출물
     (r"(사업\s*계획서|기획서|제안서|보고서|레포트)", "문서 작성 요청"),
@@ -116,7 +123,7 @@ _POSSIBLE_PATTERNS = [
     (r"(전략|방안|계획)\s*(수립|제안|만들|써)", "전략 수립 요청"),
     (r"(매뉴얼|가이드|설명서|튜토리얼)\s*(만들|작성|써)", "가이드 작성 요청"),
 
-    # 앱 개발 — "결제 기능" 처럼 도메인 + 기능 조합이 많아서 우선순위 중요
+    # 앱 개발
     (r"(기능|feature)\s*(추가|구현|개발|만들)", "기능 추가 요청"),
     (r"(버그|에러|오류)\s*(수정|고쳐|잡아|픽스)", "버그 수정 요청"),
     (r"(리팩터|리팩토링|refactor)", "리팩터링 요청"),
@@ -126,7 +133,6 @@ _POSSIBLE_PATTERNS = [
     (r"(연동|통합|integration)\s*(구현|해줘|개발)", "연동 구현 요청"),
 ]
 
-# 모호함 힌트 (ambiguous 판정)
 _AMBIGUOUS_PATTERNS = [
     r"^(뭐|뭔가|아무거나|랜덤|뭐든)\s*(해|시켜|추천)",
     r"^(심심|재밌|즐거)",
@@ -135,17 +141,7 @@ _AMBIGUOUS_PATTERNS = [
 
 
 def _rule_based_judge(raw_input: str) -> Optional[FeasibilityResult]:
-    """
-    1단계 규칙 기반 판정.
-    판정 가능하면 FeasibilityResult, 불가능하면 None (→ LLM 단계로).
-
-    순서:
-      1. 빈/짧은 입력 → ambiguous
-      2. 명확한 possible 패턴 (개발 맥락이 우선 — "결제 기능 추가" 같은 경우)
-      3. 범위 밖 패턴 (out_of_scope)
-      4. 순수 주문 패턴 (possible에 안 걸리는 "치킨 주문해줘" 등)
-      5. 모호 패턴 (ambiguous)
-    """
+    """1단계 규칙 기반 판정. 판정 가능하면 FeasibilityResult, 아니면 None."""
     text = raw_input.strip()
 
     # 1. 빈 입력 / 너무 짧음
@@ -184,7 +180,7 @@ def _rule_based_judge(raw_input: str) -> Optional[FeasibilityResult]:
                 decided_by="rule",
             )
 
-    # 4. 순수 주문/구매 패턴 (개발 맥락이 아닌 물리 주문)
+    # 4. 순수 주문/구매 패턴
     for pattern, label in _PURE_ORDER_PATTERNS:
         if re.search(pattern, text):
             return FeasibilityResult(
@@ -204,12 +200,11 @@ def _rule_based_judge(raw_input: str) -> Optional[FeasibilityResult]:
                 decided_by="rule",
             )
 
-    # 규칙으로 판정 불가 → LLM 단계로
     return None
 
 
 # ---------------------------------------------------------------------------
-# 2단계 — LLM 기반 판정
+# 2단계 — LLM 기반 판정 (call_llm_json 사용)
 # ---------------------------------------------------------------------------
 
 _LLM_PROMPT_TEMPLATE = """\
@@ -251,10 +246,9 @@ _LLM_PROMPT_TEMPLATE = """\
 
 def _llm_judge(raw_input: str) -> FeasibilityResult:
     """
-    2단계 LLM 기반 판정.
+    2단계 LLM 기반 판정 — call_llm_json 사용.
 
-    OPENROUTER_API_KEY 없으면 ambiguous로 안전하게 반환.
-    LLM 호출 실패 시에도 ambiguous로 안전하게.
+    OPENROUTER_API_KEY 없거나 호출/파싱 실패 시 ambiguous로 안전하게 반환.
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -265,59 +259,22 @@ def _llm_judge(raw_input: str) -> FeasibilityResult:
             decided_by="fallback",
         )
 
-    model = os.environ.get("FEASIBILITY_MODEL", "openai/gpt-5.4-mini")
-    timeout = float(os.environ.get("FEASIBILITY_TIMEOUT", "30.0"))
+    prompt = _LLM_PROMPT_TEMPLATE.format(raw_input=raw_input)
 
-    try:
-        import httpx
+    data = call_llm_json(
+        prompt=prompt,
+        model=FEASIBILITY_MODEL,
+        timeout=FEASIBILITY_TIMEOUT,
+    )
 
-        response = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "user", "content": _LLM_PROMPT_TEMPLATE.format(raw_input=raw_input)}
-                ],
-                "response_format": {"type": "json_object"},
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return _parse_llm_response(content)
-
-    except Exception as exc:
-        # LLM 실패 → ambiguous로 안전하게 (silent fallback 예외 — Phase 0.5는 게이트라 전체 중단 금지)
+    # call_llm_json이 None 반환 = 네트워크 실패 or 모든 재시도 파싱 실패
+    if data is None or not isinstance(data, dict):
         return FeasibilityResult(
             verdict=VERDICT_AMBIGUOUS,
-            reason=f"LLM 판정 실패 ({type(exc).__name__})",
+            reason="LLM 판정 실패",
             suggested_clarification="요청을 더 구체적으로 다시 입력해주세요.",
             decided_by="fallback",
         )
-
-
-def _parse_llm_response(content: str) -> FeasibilityResult:
-    """LLM JSON 응답 파싱. 실패 시 ambiguous."""
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, ValueError):
-        # JSON 파싱 실패 — 코드 블록 제거 후 재시도
-        cleaned = content.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        try:
-            data = json.loads(cleaned)
-        except Exception:
-            return FeasibilityResult(
-                verdict=VERDICT_AMBIGUOUS,
-                reason="LLM 응답 파싱 실패",
-                suggested_clarification="요청을 다시 입력해주세요.",
-                decided_by="fallback",
-            )
 
     verdict = data.get("verdict", VERDICT_AMBIGUOUS)
     if verdict not in _ALL_VERDICTS:
@@ -341,20 +298,9 @@ def check_feasibility(raw_input: str) -> FeasibilityResult:
 
     1단계 규칙 판정 → 판정 안 되면 2단계 LLM 판정.
     항상 FeasibilityResult를 반환. 예외 전파 없음.
-
-    호출 예:
-        result = check_feasibility("사업계획서 써줘")
-        if result.verdict == VERDICT_POSSIBLE:
-            # Phase 1로 진행
-        elif result.verdict == VERDICT_OUT_OF_SCOPE:
-            # 사용자에게 result.reason 표시
-        else:  # ambiguous
-            # 사용자에게 result.suggested_clarification 되물음
     """
-    # 1단계 — 규칙
     rule_result = _rule_based_judge(raw_input)
     if rule_result is not None:
         return rule_result
 
-    # 2단계 — LLM
     return _llm_judge(raw_input)
