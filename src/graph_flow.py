@@ -3,6 +3,15 @@ v4 LangGraph 그래프 — Phase 7 앱개발 트랙 전용.
 
 v3 전체 파이프라인(classify→research→document→...)은 Phase 0.5~6으로 대체됨.
 이 파일은 Phase 7 (planner→builder→review→approval) 서브그래프만 포함.
+
+Step 14 (코드 경량화):
+  OrchestratorState에서 v3 잔재 필드 8개 제거
+  (research_bundle, initial_document, cross_audit_result,
+   canonical_doc, canonical_frozen, slice_plan,
+   current_slice_index, doc_only_mode)
+
+  Phase 7에서 실제 사용되는 필드만 남김.
+  deliverable_spec은 review_gate_node에서 사용하므로 유지.
 """
 from __future__ import annotations
 
@@ -12,7 +21,7 @@ from typing_extensions import TypedDict
 
 
 # ---------------------------------------------------------------------------
-# State 정의 — artifact_store 컬럼과 1:1 대응
+# State 정의 — Phase 7에서 실제 사용하는 필드만
 # ---------------------------------------------------------------------------
 
 class OrchestratorState(TypedDict, total=False):
@@ -22,19 +31,8 @@ class OrchestratorState(TypedDict, total=False):
     raw_input:           str
     task_type:           str
 
-    # 리서치 (v3 호환 필드, Phase 7 입력으로 전달 가능)
-    research_bundle:     dict
-
-    # 문서 계층 (v3 호환 필드)
-    initial_document:    dict
-    cross_audit_result:  dict
-    canonical_doc:       dict
-    canonical_frozen:    bool
+    # Phase 6에서 전달되는 산출물 스펙 (review_gate_node에서 사용)
     deliverable_spec:    dict
-
-    # 계획
-    slice_plan:          dict
-    current_slice_index: int
 
     # planner / builder
     plan:                list[dict]
@@ -72,9 +70,6 @@ class OrchestratorState(TypedDict, total=False):
     run_status:          str
     last_node:           str
     error:               Optional[str]
-
-    # 내부 플래그
-    doc_only_mode:       bool
 
 
 # ---------------------------------------------------------------------------
