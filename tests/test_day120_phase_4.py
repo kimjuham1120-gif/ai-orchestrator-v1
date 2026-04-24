@@ -245,7 +245,7 @@ class TestPartialFailure:
         def side_effect(*args, **kwargs):
             model = kwargs["json"]["model"]
             text = _get_text(kwargs)
-            if "claude" in model:  raise _httpx.ConnectError("claude down")
+            if "claude-opus" in model:  raise _httpx.ConnectError("claude-opus down")
             if "gemini" in model:  raise _httpx.ConnectError("gemini down")
             if "**균형 감사관**" in text: return _mock_ok("균형 피드백")
             if "**편집자**" in text:      return _mock_ok("# 통합 문서")
@@ -418,7 +418,10 @@ class TestModelSelection:
 
         assert any("claude-opus-4.7" in m for m in captured_models)
         assert any("gemini-3.1-pro" in m for m in captured_models)
-        assert sum(1 for m in captured_models if "gpt-5.4" in m) >= 2
+        # 균형 감사관 (GPT-5.4)
+        assert any("gpt-5.4" in m for m in captured_models)
+        # 통합 LLM (Step 14-2: Sonnet 4.6으로 전환됨)
+        assert any("claude-sonnet-4-6" in m for m in captured_models)
 
     def test_custom_structure_model(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")

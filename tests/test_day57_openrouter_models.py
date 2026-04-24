@@ -186,7 +186,7 @@ class TestRoleModelIsolation:
         assert get_builder_model() == DEFAULT_BUILDER_MODEL
 
     def test_all_defaults_are_consistent(self, monkeypatch):
-        """모든 역할의 기본값이 openrouter/auto로 통일."""
+        """Step 14-2: planner/builder는 Sonnet 4.6으로 전환, reviewer는 auto 유지."""
         for env in ["OPENROUTER_PLANNER_MODEL", "OPENROUTER_BUILDER_MODEL",
                     "OPENROUTER_REVIEWER_MODEL"]:
             monkeypatch.delenv(env, raising=False)
@@ -195,6 +195,6 @@ class TestRoleModelIsolation:
         from src.builder.builder_config import DEFAULT_BUILDER_MODEL
         from src.reviewer.reviewer_config import DEFAULT_REVIEWER_MODEL
 
-        assert DEFAULT_PLANNER_MODEL == "openrouter/auto"
-        assert DEFAULT_BUILDER_MODEL == "openrouter/auto"
+        assert DEFAULT_PLANNER_MODEL == "anthropic/claude-sonnet-4-6"
+        assert DEFAULT_BUILDER_MODEL == "anthropic/claude-sonnet-4-6"
         assert DEFAULT_REVIEWER_MODEL == "openrouter/auto"

@@ -1,17 +1,25 @@
 """
 Day 114 — Phase 0.5 · 처리 가능성 게이트 테스트.
+(Step 14-2 전환: call_llm_json patch 방식)
 
-검증 포인트:
+검증 포인트 (변경 없음):
 1. 규칙 기반 판정 (빈/짧은 입력, 범위 밖, 모호, 명확)
 2. LLM 기반 판정 (규칙으로 결정 안 되는 경우)
 3. LLM 실패 시 안전한 fallback
 4. 결과 타입 (FeasibilityResult)
 5. decided_by 필드로 1단계/2단계 추적 가능
+
+패치 방식:
+  src.phases.phase_0_5_gate.call_llm_json 을 직접 mock
+  (httpx.post patch 방식은 deprecated — call_llm_json이 내부 재시도·캐싱 담당)
 """
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
+
+_CALL_LLM_JSON_PATCH = "src.phases.phase_0_5_gate.call_llm_json"
 
 
 # ===========================================================================
@@ -21,10 +29,7 @@ from unittest.mock import patch, MagicMock
 class TestFeasibilityResultStructure:
     def test_to_dict_has_all_keys(self):
         from src.phases.phase_0_5_gate import FeasibilityResult, VERDICT_POSSIBLE
-        result = FeasibilityResult(
-            verdict=VERDICT_POSSIBLE,
-            reason="테스트",
-        )
+        result = FeasibilityResult(verdict=VERDICT_POSSIBLE, reason="테스트")
         d = result.to_dict()
         assert "verdict" in d
         assert "reason" in d
@@ -57,13 +62,13 @@ class TestRuleEmptyInput:
 
     def test_too_short_ambiguous(self):
         from src.phases.phase_0_5_gate import check_feasibility, VERDICT_AMBIGUOUS
-        r = check_feasibility("안녕")  # 2자
+        r = check_feasibility("안녕")
         assert r.verdict == VERDICT_AMBIGUOUS
         assert r.decided_by == "rule"
 
 
 # ===========================================================================
-# 3. 규칙 기반 — 범위 밖 (out_of_scope)
+# 3. 규칙 기반 — 범위 밖
 # ===========================================================================
 
 class TestRuleOutOfScope:
@@ -85,11 +90,11 @@ class TestRuleOutOfScope:
         r = check_feasibility(text)
         assert r.verdict == VERDICT_OUT_OF_SCOPE, f"{label}: {text} → {r.verdict}"
         assert r.decided_by == "rule"
-        assert r.reason  # 이유 비어있지 않음
+        assert r.reason
 
 
 # ===========================================================================
-# 4. 규칙 기반 — 모호 (ambiguous)
+# 4. 규칙 기반 — 모호
 # ===========================================================================
 
 class TestRuleAmbiguous:
@@ -132,140 +137,96 @@ class TestRulePossible:
 
 
 # ===========================================================================
-# 6. LLM 단계 — 규칙으로 결정 못 하는 경우
+# 6. LLM 단계 — call_llm_json 직접 patch
 # ===========================================================================
 
 class TestLLMFallback:
     def test_unclear_text_no_key_returns_ambiguous(self, monkeypatch):
-        """규칙으로 판정 안 되고 API 키 없으면 ambiguous."""
+        """API 키 없으면 ambiguous fallback."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from src.phases.phase_0_5_gate import check_feasibility, VERDICT_AMBIGUOUS
-        # 규칙 패턴에 매칭 안 되는 애매한 텍스트
         r = check_feasibility("그거 한번 해보자")
         assert r.verdict == VERDICT_AMBIGUOUS
         assert r.decided_by == "fallback"
 
     def test_llm_called_when_rule_undecided(self, monkeypatch):
-        """규칙으로 판정 안 되면 LLM 호출됨."""
+        """규칙으로 판정 안 되면 call_llm_json 호출."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx, json as jsonlib
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": jsonlib.dumps({
-                        "verdict": "possible",
-                        "reason": "문서 작성 요청으로 판정",
-                        "suggested_clarification": None,
-                    })
-                }
-            }]
+        llm_response = {
+            "verdict": "possible",
+            "reason": "문서 작성 요청으로 판정",
+            "suggested_clarification": None,
         }
 
-        with patch.object(httpx, "post", return_value=mock_resp) as mock_post:
+        with patch(_CALL_LLM_JSON_PATCH, return_value=llm_response) as mock_json:
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_POSSIBLE
             r = check_feasibility("그거 한번 해보자")
-            assert mock_post.called
+            assert mock_json.called
             assert r.verdict == VERDICT_POSSIBLE
             assert r.decided_by == "llm"
 
     def test_llm_out_of_scope_response(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx, json as jsonlib
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": jsonlib.dumps({
-                        "verdict": "out_of_scope",
-                        "reason": "실시간 정보 요청",
-                        "suggested_clarification": None,
-                    })
-                }
-            }]
+        llm_response = {
+            "verdict": "out_of_scope",
+            "reason": "실시간 정보 요청",
+            "suggested_clarification": None,
         }
 
-        with patch.object(httpx, "post", return_value=mock_resp):
+        with patch(_CALL_LLM_JSON_PATCH, return_value=llm_response):
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_OUT_OF_SCOPE
             r = check_feasibility("그거 한번 해보자")
             assert r.verdict == VERDICT_OUT_OF_SCOPE
 
     def test_llm_network_failure_returns_ambiguous(self, monkeypatch):
-        """LLM 네트워크 실패 시 ambiguous로 안전하게 (Phase 0.5 게이트는 예외 금지)."""
+        """LLM 실패 시 ambiguous fallback (call_llm_json이 None 반환)."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx
 
-        with patch.object(httpx, "post", side_effect=httpx.ConnectError("refused")):
+        with patch(_CALL_LLM_JSON_PATCH, return_value=None):
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_AMBIGUOUS
             r = check_feasibility("그거 한번 해보자")
             assert r.verdict == VERDICT_AMBIGUOUS
             assert r.decided_by == "fallback"
 
-    def test_llm_invalid_json_returns_ambiguous(self, monkeypatch):
-        """LLM이 JSON 아닌 응답 → ambiguous."""
+    def test_llm_invalid_response_returns_ambiguous(self, monkeypatch):
+        """call_llm_json이 dict 아닌 값 반환 → ambiguous fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "이건 JSON이 아닙니다"}}]
-        }
-
-        with patch.object(httpx, "post", return_value=mock_resp):
+        # dict가 아닌 응답 (list 등) — call_llm_json은 list도 반환 가능
+        with patch(_CALL_LLM_JSON_PATCH, return_value=["잘못된", "응답"]):
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_AMBIGUOUS
             r = check_feasibility("그거 한번 해보자")
             assert r.verdict == VERDICT_AMBIGUOUS
             assert r.decided_by == "fallback"
-
-    def test_llm_markdown_wrapped_json_parses(self, monkeypatch):
-        """LLM이 ```json 코드 블록으로 감싼 응답도 파싱."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx, json as jsonlib
-
-        wrapped = "```json\n" + jsonlib.dumps({
-            "verdict": "possible",
-            "reason": "OK",
-            "suggested_clarification": None,
-        }) + "\n```"
-
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": wrapped}}]
-        }
-
-        with patch.object(httpx, "post", return_value=mock_resp):
-            from src.phases.phase_0_5_gate import check_feasibility, VERDICT_POSSIBLE
-            r = check_feasibility("그거 한번 해보자")
-            assert r.verdict == VERDICT_POSSIBLE
 
     def test_llm_invalid_verdict_defaults_to_ambiguous(self, monkeypatch):
-        """LLM이 이상한 verdict 값 반환 → ambiguous."""
+        """LLM이 이상한 verdict 값 반환 → ambiguous로 자동 보정."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx, json as jsonlib
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": jsonlib.dumps({
-                        "verdict": "definitely_yes",  # 잘못된 값
-                        "reason": "x",
-                    })
-                }
-            }]
+        llm_response = {
+            "verdict": "definitely_yes",  # 잘못된 값
+            "reason": "x",
         }
 
-        with patch.object(httpx, "post", return_value=mock_resp):
+        with patch(_CALL_LLM_JSON_PATCH, return_value=llm_response):
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_AMBIGUOUS
             r = check_feasibility("애매한 입력")
             assert r.verdict == VERDICT_AMBIGUOUS
+
+    def test_llm_missing_reason_uses_default(self, monkeypatch):
+        """reason 필드 누락 → 기본 'LLM 판정' 사용."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+        llm_response = {"verdict": "possible"}
+
+        with patch(_CALL_LLM_JSON_PATCH, return_value=llm_response):
+            from src.phases.phase_0_5_gate import check_feasibility, VERDICT_POSSIBLE
+            r = check_feasibility("애매한 입력")
+            assert r.verdict == VERDICT_POSSIBLE
+            assert r.reason  # 어떤 값이든 들어있음
+            assert r.decided_by == "llm"
 
 
 # ===========================================================================
@@ -276,34 +237,32 @@ class TestRulePrecedence:
     def test_rule_matches_skips_llm(self, monkeypatch):
         """규칙으로 판정되면 LLM 호출 안 함."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx
 
-        with patch.object(httpx, "post") as mock_post:
+        with patch(_CALL_LLM_JSON_PATCH) as mock_json:
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_POSSIBLE
             r = check_feasibility("사업계획서 써줘")
             assert r.verdict == VERDICT_POSSIBLE
             assert r.decided_by == "rule"
-            assert not mock_post.called  # LLM 호출 없음
+            assert not mock_json.called
 
     def test_out_of_scope_rule_skips_llm(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        import httpx
 
-        with patch.object(httpx, "post") as mock_post:
+        with patch(_CALL_LLM_JSON_PATCH) as mock_json:
             from src.phases.phase_0_5_gate import check_feasibility, VERDICT_OUT_OF_SCOPE
             r = check_feasibility("오늘 날씨 알려줘")
             assert r.verdict == VERDICT_OUT_OF_SCOPE
             assert r.decided_by == "rule"
-            assert not mock_post.called
+            assert not mock_json.called
 
 
 # ===========================================================================
-# 8. 전체 워크플로우 스모크 테스트
+# 8. 스모크 테스트
 # ===========================================================================
 
 class TestSmoke:
     def test_check_feasibility_always_returns_result(self):
-        """check_feasibility는 어떤 입력에도 FeasibilityResult 반환 (예외 전파 없음)."""
+        """check_feasibility는 어떤 입력에도 FeasibilityResult 반환."""
         from src.phases.phase_0_5_gate import check_feasibility, FeasibilityResult
         inputs = [
             "",
@@ -312,7 +271,7 @@ class TestSmoke:
             "오늘 날씨",
             "뭐 시켜줘",
             "일반적인 텍스트이지만 규칙에 안 잡힘",
-            "🚀✨" * 100,  # 이모지 폭탄
+            "🚀✨" * 100,
         ]
         for text in inputs:
             r = check_feasibility(text)
