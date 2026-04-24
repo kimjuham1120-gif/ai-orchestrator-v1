@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # .env 자동 로드 (Step 13 후속 — uvicorn 기동 시 API 키 주입)

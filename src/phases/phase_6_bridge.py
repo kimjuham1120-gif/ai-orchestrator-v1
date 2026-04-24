@@ -31,7 +31,7 @@ Phase 6 · 트랙 전환 결정 (Day 118~)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 

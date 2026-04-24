@@ -44,10 +44,9 @@ Phase 4 · AI 교차 감사 (Day 120~)
 """
 from __future__ import annotations
 
-from src.utils.llm_utils import call_llm, clean_markdown_wrapper
+from src.utils.llm_utils import call_llm
 
 import os
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional

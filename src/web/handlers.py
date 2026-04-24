@@ -13,11 +13,11 @@ src/web/handlers.py — v4 웹 UI용 Phase 호출 핸들러 (Day 122~)
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.store.artifact_store import (
-    load_project, save_project, update_project, update_project_phase,
-    list_project_runs, load_artifact, update_artifact, save_artifact,
+    load_project, save_project, update_project_phase,
+    list_project_runs, update_artifact, save_artifact,
     utc_now_iso,
 )
 from src.utils.id_generator import generate_run_id, generate_thread_id

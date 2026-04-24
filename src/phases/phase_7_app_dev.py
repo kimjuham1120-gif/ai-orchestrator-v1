@@ -23,10 +23,10 @@ Phase 7 · 앱개발 실행 (Day 121, Step 10)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from src.store.artifact_store import save_artifact, utc_now_iso
+from src.store.artifact_store import save_artifact
 from src.utils.id_generator import generate_run_id, generate_thread_id
 
 

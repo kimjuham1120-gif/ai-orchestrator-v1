@@ -13,11 +13,11 @@ v3 전체 파이프라인(run_orchestration 등)은 Phase 0.5~7로 대체됨.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.store.artifact_store import (
     load_artifact, update_artifact,
-    update_execution_result, update_final_summary,
+    update_execution_result,
 )
 from src.packet.packet_builder import build_execution_packet, write_packet_file
 from src.verification.result_verifier import verify_execution_result

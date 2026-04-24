@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from src.utils.llm_utils import call_llm_json
