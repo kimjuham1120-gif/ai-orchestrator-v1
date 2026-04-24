@@ -168,6 +168,33 @@ CREATE TABLE IF NOT EXISTS projects (
 )
 """
 
+# llm_calls 테이블 (Step 14-1 신규 — 비용·토큰 추적)
+_DDL_LLM_CALLS = """
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id         TEXT,
+    run_id             TEXT,
+    phase              TEXT,
+    model              TEXT,
+    prompt_tokens      INTEGER DEFAULT 0,
+    completion_tokens  INTEGER DEFAULT 0,
+    total_tokens       INTEGER DEFAULT 0,
+    cost_usd           REAL    DEFAULT 0.0,
+    cached             INTEGER DEFAULT 0,
+    duration_ms        INTEGER DEFAULT 0,
+    status             TEXT    DEFAULT 'success',
+    error              TEXT,
+    created_at         TEXT
+)
+"""
+
+# llm_calls 인덱스 (집계·조회 최적화)
+_INDEXES_LLM_CALLS = [
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_project  ON llm_calls(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_run      ON llm_calls(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created  ON llm_calls(created_at)",
+]
+
 # v4 신규 컬럼 리스트 (마이그레이션용)
 _V4_NEW_COLUMNS = [
     ("project_id",         "TEXT"),
@@ -201,11 +228,15 @@ def _connect(db_path: str) -> sqlite3.Connection:
     DB 연결 + 스키마 보장.
     - 신규 DB: CREATE TABLE 실행
     - 기존 v3 DB: ALTER TABLE로 v4 컬럼 추가
+    - Step 14-1: llm_calls 테이블 + 인덱스 보장
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute(_DDL_ARTIFACTS)
     conn.execute(_DDL_PROJECTS)
+    conn.execute(_DDL_LLM_CALLS)
+    for idx_sql in _INDEXES_LLM_CALLS:
+        conn.execute(idx_sql)
     _ensure_v4_columns(conn)
     conn.commit()
     return conn
@@ -434,3 +465,164 @@ def update_project_phase(
         "status": status,
         "updated_at": utc_now_iso(),
     })
+
+
+# ---------------------------------------------------------------------------
+# Step 14-1 신규 API — llm_calls 테이블 (비용·토큰 추적)
+# ---------------------------------------------------------------------------
+
+def log_llm_call(
+    db_path: str,
+    project_id: Optional[str],
+    run_id: Optional[str],
+    phase: Optional[str],
+    model: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cost_usd: float = 0.0,
+    cached: bool = False,
+    duration_ms: int = 0,
+    status: str = "success",
+    error: Optional[str] = None,
+) -> int:
+    """
+    LLM 호출 1건을 기록. 실패해도 예외 전파 없음 (로그만 실패).
+
+    Args:
+      project_id: 소속 프로젝트 (없으면 None)
+      run_id:     소속 run (없으면 None)
+      phase:      "0.5" / "1" / "3a" / "3b" / "4-structure" / "5" 등
+      model:      OpenRouter 모델 ID
+      prompt_tokens / completion_tokens: usage에서 파싱한 값
+      cost_usd:   calculate_cost 결과
+      cached:     프롬프트 캐싱 히트 여부
+      duration_ms: 호출 소요 시간 (밀리초)
+      status:     "success" | "failed" | "skipped"
+      error:      실패 시 에러 메시지 (선택)
+
+    Returns:
+      삽입된 row의 id. 실패 시 -1.
+    """
+    # 방어적 처리
+    p_tok = max(0, int(prompt_tokens or 0))
+    c_tok = max(0, int(completion_tokens or 0))
+    total_tok = p_tok + c_tok
+    cost = max(0.0, float(cost_usd or 0.0))
+    dur = max(0, int(duration_ms or 0))
+    cached_int = 1 if cached else 0
+
+    try:
+        conn = _connect(db_path)
+        cursor = conn.execute(
+            """
+            INSERT INTO llm_calls (
+                project_id, run_id, phase, model,
+                prompt_tokens, completion_tokens, total_tokens,
+                cost_usd, cached, duration_ms, status, error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id, run_id, phase, model,
+                p_tok, c_tok, total_tok,
+                cost, cached_int, dur, status, error, utc_now_iso(),
+            ),
+        )
+        row_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return row_id if row_id is not None else -1
+    except Exception:
+        # 로깅 실패는 무시 (프로덕션 흐름 방해 금지)
+        return -1
+
+
+def get_project_total_cost(db_path: str, project_id: str) -> float:
+    """
+    프로젝트 누적 비용 (USD).
+
+    성공·실패·캐시 관계없이 모든 호출의 cost_usd 합계.
+    BudgetGuard가 이 값을 읽어 상한 체크.
+    """
+    if not project_id:
+        return 0.0
+    try:
+        conn = _connect(db_path)
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM llm_calls WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        conn.close()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+
+
+def get_run_llm_calls(
+    db_path: str,
+    run_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    특정 run의 모든 LLM 호출 내역 (시간순).
+
+    Phase별 소비 분석·디버깅용.
+    """
+    if not run_id:
+        return []
+    try:
+        conn = _connect(db_path)
+        rows = conn.execute(
+            "SELECT * FROM llm_calls WHERE run_id = ? ORDER BY id ASC",
+            (run_id,),
+        ).fetchall()
+        conn.close()
+        return [_llm_call_row_to_dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def get_recent_llm_calls(
+    db_path: str,
+    limit: int = 50,
+    project_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    최근 LLM 호출 내역 (역시간순).
+
+    Args:
+      limit: 반환 최대 개수 (1~1000)
+      project_id: 특정 프로젝트만 필터링 (None이면 전체)
+    """
+    limit = max(1, min(int(limit or 50), 1000))
+    try:
+        conn = _connect(db_path)
+        if project_id:
+            rows = conn.execute(
+                """
+                SELECT * FROM llm_calls
+                WHERE project_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (project_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM llm_calls ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        conn.close()
+        return [_llm_call_row_to_dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def _llm_call_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    """llm_calls row → dict. cached INTEGER → bool 복원."""
+    result: Dict[str, Any] = {}
+    for key in row.keys():
+        val = row[key]
+        if key == "cached" and val is not None:
+            result[key] = bool(val)
+        else:
+            result[key] = val
+    return result

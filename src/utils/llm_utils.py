@@ -1,35 +1,50 @@
 """
-src/utils/llm_utils.py — LLM 공통 유틸리티 (Day 123, Step 13 + Day 131, Step 14-2)
+src/utils/llm_utils.py — LLM 공통 유틸리티.
 
 기능:
-  1. 프롬프트 캐싱 — OpenRouter cache_control 헤더 (Claude 90%, GPT 50% 할인)
+  1. 프롬프트 캐싱 — OpenRouter cache_control (Claude 90%, GPT 50% 할인)
   2. Exponential backoff 재시도 — 최대 2회, 1s/2s 대기
-  3. 공통 _call_llm() 헬퍼 — 모든 Phase에서 재사용
-  4. (Day 131) call_llm_json — JSON 응답 파싱 실패 시 보정 프롬프트로 재시도
+  3. JSON 응답 전용 래퍼 — call_llm_json (Day 131, Step 14-2)
+  4. 자동 비용/토큰 로깅 — set_llm_context (Day 136, Step 14-1 단계 3)
 
 사용법:
-  from src.utils.llm_utils import call_llm, call_llm_json
-
-  # 기본 호출 (캐싱 + 재시도 자동 적용)
+  # 기본 호출 (로깅 안 됨)
+  from src.utils.llm_utils import call_llm
   text = call_llm(prompt, model, timeout)
 
-  # JSON 응답을 파싱까지 보장하는 호출
-  data = call_llm_json(prompt, model, timeout)  # dict 또는 None
+  # 자동 로깅 (컨텍스트 설정 후)
+  from src.utils.llm_utils import set_llm_context, call_llm
+  set_llm_context(
+      db_path="orchestrator.db",
+      project_id="proj-1",
+      run_id="run-1",
+      phase="0.5",
+  )
+  text = call_llm(prompt, model, timeout)
+  # ↑ 자동으로 llm_calls 테이블에 INSERT
 
-  # 캐싱 비활성화
-  text = call_llm(prompt, model, timeout, use_cache=False)
+  # 컨텍스트 해제
+  clear_llm_context()
+
+자동 로깅 동작:
+  - 컨텍스트 설정 시에만 작동
+  - 실패해도 예외 전파 없음 (로깅 실패가 본 작업 방해 X)
+  - httpx 응답의 usage 필드에서 토큰 추출
+  - model_pricing으로 비용 계산
+  - cached 여부는 프롬프트 길이 기준 추정
 
 캐싱 정책:
   PROMPT_CACHE_ENABLED=true (기본값) 로 전역 on/off
-  프롬프트 길이 >= 1024 토큰 추정 시에만 cache_control 추가
-  (짧은 프롬프트는 캐싱 오버헤드가 이득보다 큼)
+  프롬프트 >= 4000자일 때만 cache_control 추가
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
-import time
 import re
+import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -40,14 +55,77 @@ import httpx
 # ---------------------------------------------------------------------------
 
 _CACHE_ENABLED_DEFAULT = True
-_CACHE_MIN_CHARS = 4000      # 약 1000 토큰 이상일 때만 캐싱 (4자 ≈ 1토큰)
+_CACHE_MIN_CHARS = 4000      # 약 1000 토큰 이상일 때만 캐싱
 _MAX_RETRIES = 2
-_RETRY_DELAYS = [1.0, 2.0]   # 초 단위 (exponential backoff)
+_RETRY_DELAYS = [1.0, 2.0]   # exponential backoff
 
 
 def _is_cache_enabled() -> bool:
     val = os.environ.get("PROMPT_CACHE_ENABLED", "true").strip().lower()
     return val != "false"
+
+
+# ---------------------------------------------------------------------------
+# 자동 로깅 컨텍스트 (Day 136, Step 14-1 단계 3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LLMContext:
+    """
+    현재 실행 중인 Phase의 컨텍스트.
+    call_llm이 자동 로깅할 때 이 정보를 사용.
+    """
+    db_path: str
+    project_id: Optional[str] = None
+    run_id: Optional[str] = None
+    phase: Optional[str] = None
+
+
+# 모듈 레벨 컨텍스트 변수 (async 안전)
+_current_context: contextvars.ContextVar[Optional[LLMContext]] = contextvars.ContextVar(
+    "_llm_context", default=None
+)
+
+
+def set_llm_context(
+    db_path: str,
+    project_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    phase: Optional[str] = None,
+) -> None:
+    """
+    현재 실행 컨텍스트 설정. 이후 call_llm 호출이 자동 로깅됨.
+
+    Args:
+      db_path: SQLite DB 경로 (필수)
+      project_id: 프로젝트 ID (예산 집계용)
+      run_id: run ID (Phase 호출 이력용)
+      phase: "0.5" / "1" / "3a" / "3b" / "4-structure" 등
+
+    Note:
+      빈 db_path를 주면 컨텍스트 해제 효과.
+    """
+    if not db_path:
+        clear_llm_context()
+        return
+
+    ctx = LLMContext(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=run_id,
+        phase=phase,
+    )
+    _current_context.set(ctx)
+
+
+def clear_llm_context() -> None:
+    """로깅 컨텍스트 해제."""
+    _current_context.set(None)
+
+
+def get_llm_context() -> Optional[LLMContext]:
+    """현재 컨텍스트 조회 (디버깅용)."""
+    return _current_context.get()
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +138,6 @@ def _build_messages(prompt: str, use_cache: bool) -> list:
     캐싱 활성화 시 긴 프롬프트에 cache_control 추가.
     """
     if use_cache and _is_cache_enabled() and len(prompt) >= _CACHE_MIN_CHARS:
-        # cache_control 블록 형식 (OpenRouter / Anthropic 호환)
         return [
             {
                 "role": "user",
@@ -73,12 +150,16 @@ def _build_messages(prompt: str, use_cache: bool) -> list:
                 ],
             }
         ]
-    # 기본 형식
     return [{"role": "user", "content": prompt}]
 
 
+def _cache_applied(prompt: str, use_cache: bool) -> bool:
+    """프롬프트에 cache_control이 적용되었는지 판정 (로깅용)."""
+    return use_cache and _is_cache_enabled() and len(prompt) >= _CACHE_MIN_CHARS
+
+
 # ---------------------------------------------------------------------------
-# 마크다운 wrapper 제거 (기존 모든 Phase에서 반복 사용)
+# 마크다운 wrapper 제거
 # ---------------------------------------------------------------------------
 
 def clean_markdown_wrapper(text: str) -> str:
@@ -92,7 +173,63 @@ def clean_markdown_wrapper(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 핵심 공개 API — call_llm (캐싱 + 재시도)
+# 자동 로깅 헬퍼 (내부 전용)
+# ---------------------------------------------------------------------------
+
+def _try_log_call(
+    model: str,
+    response_json: Optional[dict],
+    cached: bool,
+    duration_ms: int,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    """
+    컨텍스트 있으면 llm_calls 테이블에 기록. 실패해도 예외 전파 없음.
+
+    - 순환 import 방지: artifact_store와 model_pricing을 지연 import.
+    - 테스트 환경에서는 이 함수가 아무것도 안 함 (컨텍스트 없음).
+    """
+    ctx = _current_context.get()
+    if ctx is None:
+        return
+
+    try:
+        # 지연 import (순환 참조 방지, 로딩 비용 분산)
+        from src.store.artifact_store import log_llm_call
+        from src.utils.model_pricing import estimate_cost_from_usage
+
+        usage = {}
+        if isinstance(response_json, dict):
+            u = response_json.get("usage")
+            if isinstance(u, dict):
+                usage = u
+
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        cost = estimate_cost_from_usage(model, usage, cached=cached)
+
+        log_llm_call(
+            db_path=ctx.db_path,
+            project_id=ctx.project_id,
+            run_id=ctx.run_id,
+            phase=ctx.phase,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost,
+            cached=cached,
+            duration_ms=duration_ms,
+            status=status,
+            error=error,
+        )
+    except Exception:
+        # 로깅 자체가 실패해도 본 흐름 방해 금지
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 핵심 공개 API — call_llm
 # ---------------------------------------------------------------------------
 
 def call_llm(
@@ -102,30 +239,35 @@ def call_llm(
     use_cache: bool = True,
 ) -> Optional[str]:
     """
-    OpenRouter LLM 호출 — 캐싱 + exponential backoff 재시도.
+    OpenRouter LLM 호출 — 캐싱 + 재시도 + 자동 로깅.
 
     Args:
-      prompt: 사용자 프롬프트 (단일 문자열)
-      model: OpenRouter 모델 ID (예: "anthropic/claude-sonnet-4-6")
+      prompt: 사용자 프롬프트
+      model: OpenRouter 모델 ID
       timeout: 요청 타임아웃 (초)
-      use_cache: 캐싱 활성화 여부 (기본 True)
-                 프롬프트가 짧으면 자동으로 캐싱 건너뜀
+      use_cache: 캐싱 활성화 여부
 
     Returns:
-      응답 텍스트 (마크다운 wrapper 제거됨)
-      실패 시 None (예외 전파 없음)
+      응답 텍스트 (마크다운 wrapper 제거됨). 실패 시 None.
+
+    자동 로깅:
+      set_llm_context()로 컨텍스트 설정된 경우에만 llm_calls 테이블에 INSERT.
+      로깅 실패해도 본 호출엔 영향 없음.
 
     재시도 정책:
       - 네트워크 오류 / 5xx → 최대 2회 재시도
-      - 4xx (잘못된 요청) → 재시도 없음
-      - 타임아웃 → 재시도 없음 (이미 느린 상황)
+      - 4xx → 재시도 없음
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         return None
 
     messages = _build_messages(prompt, use_cache)
-    last_error: Optional[Exception] = None
+    cached = _cache_applied(prompt, use_cache)
+    start_time = time.time()
+
+    last_response_json: Optional[dict] = None
+    last_error: Optional[str] = None
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
@@ -142,23 +284,52 @@ def call_llm(
                 timeout=timeout,
             )
 
-            # 4xx → 재시도 의미 없음 (요청 자체가 잘못됨)
+            # 4xx → 재시도 없이 실패
             if 400 <= response.status_code < 500:
+                duration_ms = int((time.time() - start_time) * 1000)
+                _try_log_call(
+                    model=model,
+                    response_json=None,
+                    cached=cached,
+                    duration_ms=duration_ms,
+                    status="failed",
+                    error=f"HTTP {response.status_code}",
+                )
                 return None
 
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+            last_response_json = response.json()
+            content = last_response_json["choices"][0]["message"]["content"]
+
+            # 성공 로깅
+            duration_ms = int((time.time() - start_time) * 1000)
+            _try_log_call(
+                model=model,
+                response_json=last_response_json,
+                cached=cached,
+                duration_ms=duration_ms,
+                status="success",
+            )
+
             return clean_markdown_wrapper(content) if content else None
 
         except Exception as exc:
-            last_error = exc
-            # 마지막 시도가 아니면 대기 후 재시도
+            last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
             if attempt < _MAX_RETRIES:
                 delay = _RETRY_DELAYS[attempt]
                 time.sleep(delay)
             continue
 
     # 모든 재시도 소진
+    duration_ms = int((time.time() - start_time) * 1000)
+    _try_log_call(
+        model=model,
+        response_json=None,
+        cached=cached,
+        duration_ms=duration_ms,
+        status="failed",
+        error=last_error,
+    )
     return None
 
 
@@ -167,42 +338,27 @@ def call_llm(
 # ---------------------------------------------------------------------------
 
 def _strip_json_fence(text: str) -> str:
-    """
-    LLM JSON 응답에서 흔히 나오는 오염 제거.
-
-    처리 대상:
-      - ```json ... ``` 코드 블록 래퍼
-      - ``` ... ``` 언어 명시 없는 래퍼
-      - 앞뒤 공백·개행
-      - 앞쪽 설명문 (첫 '{' 또는 '[' 이전 모두 제거)
-      - 뒤쪽 설명문 (마지막 '}' 또는 ']' 이후 모두 제거)
-
-    JSON 파싱 전 전처리용. 파싱 자체는 호출자가 수행.
-    """
+    """LLM JSON 응답에서 흔히 나오는 오염 제거."""
     if not text:
         return ""
 
     cleaned = text.strip()
-
-    # 1. 코드 블록 래퍼 제거 (markdown, md, json 래벨 포함)
     cleaned = re.sub(r"^```(?:json|md|markdown)?\s*\n", "", cleaned)
     cleaned = re.sub(r"\n```\s*$", "", cleaned)
     cleaned = cleaned.strip()
 
-    # 2. 첫 JSON 시작 문자 찾기 ('{' 또는 '[')
     start_brace = cleaned.find("{")
     start_bracket = cleaned.find("[")
     starts = [s for s in (start_brace, start_bracket) if s >= 0]
     if not starts:
-        return cleaned  # JSON이 아닐 가능성, 원본 반환
+        return cleaned
     start = min(starts)
 
-    # 3. 마지막 JSON 종료 문자 찾기 ('}' 또는 ']')
     end_brace = cleaned.rfind("}")
     end_bracket = cleaned.rfind("]")
     end = max(end_brace, end_bracket)
     if end < start:
-        return cleaned  # 비정상, 원본 반환
+        return cleaned
 
     return cleaned[start:end + 1].strip()
 
@@ -218,33 +374,6 @@ def call_llm_json(
     JSON 응답을 보장하는 LLM 호출.
 
     파싱 실패 시 보정 프롬프트로 최대 retry_limit 회 재시도.
-    네트워크 재시도는 내부 call_llm이 이미 처리.
-
-    Args:
-      prompt: 원본 프롬프트 (JSON만 출력하도록 지시해야 함)
-      model: OpenRouter 모델 ID
-      timeout: 각 호출의 타임아웃 (초)
-      retry_limit: JSON 파싱 실패 시 추가 재시도 횟수 (기본 2)
-                   총 시도 = retry_limit + 1
-      use_cache: 프롬프트 캐싱 여부
-
-    Returns:
-      파싱된 dict 또는 list. 최종 실패 시 None.
-
-    실패 조건:
-      - API 키 없음 → 첫 call_llm에서 None → 즉시 None 반환
-      - 모든 재시도 JSON 파싱 실패 → None
-      - LLM 응답 자체가 None (빈 응답, 네트워크 완전 실패) → None
-
-    사용 예:
-      data = call_llm_json(
-          "다음 카페 특성을 JSON으로 분류: ...",
-          "anthropic/claude-haiku-4-5",
-          timeout=30.0,
-      )
-      if data is None:
-          # fallback 처리
-          ...
     """
     if retry_limit < 0:
         retry_limit = 0
@@ -255,27 +384,22 @@ def call_llm_json(
     for attempt in range(retry_limit + 1):
         text = call_llm(current_prompt, model, timeout, use_cache=use_cache)
 
-        # LLM 호출 자체 실패 (네트워크, API 키 없음 등)
         if text is None:
             return None
 
-        # 빈 응답
         stripped = text.strip()
         if not stripped:
             last_error = "빈 응답"
         else:
-            # JSON 추출 시도
             candidate = _strip_json_fence(stripped)
             try:
                 return json.loads(candidate)
             except (json.JSONDecodeError, ValueError) as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
 
-        # 마지막 시도면 종료
         if attempt >= retry_limit:
             break
 
-        # 보정 프롬프트 작성 후 재시도
         current_prompt = (
             f"{prompt}\n\n"
             f"[이전 응답이 JSON 파싱에 실패했습니다: {last_error}]\n"
@@ -286,5 +410,4 @@ def call_llm_json(
             f"- 한글 포함 가능, 단 문자열은 큰따옴표로 감쌀 것\n"
         )
 
-    # 모든 재시도 소진
     return None
