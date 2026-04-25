@@ -183,8 +183,8 @@ def handle_phase_1(project_id: str, db_path: str) -> Dict[str, Any]:
 def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
     """Phase 2 실행 — 동기 + 타임아웃 방식 (MVP)."""
     try:
-        from src.research.parallel_router import (
-            run_parallel_research, AllSubtopicsFailedError,
+        from src.research_v2.phase2_bridge import (
+            run_phase_2_research as run_parallel_research, AllSubtopicsFailedError,
         )
     except ImportError as exc:
         return {"ok": False, "error": f"Phase 2 모듈 없음: {exc}"}
