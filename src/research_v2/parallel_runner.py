@@ -21,7 +21,7 @@ Phase 2의 핵심 오케스트레이터:
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -229,32 +229,22 @@ def _resolve_overall_timeout(
 
 
 # ---------------------------------------------------------------------------
-# 간편 빌더 — 4개 어댑터 기본 세트 생성
+# build_default_adapters — registry로 위임 (하위호환 유지)
 # ---------------------------------------------------------------------------
 
 def build_default_adapters(mode: str = "web_search") -> List[ResearchAdapter]:
     """
-    4개 어댑터 기본 세트 생성 — 모두 같은 모드로.
+    4개 어댑터 기본 세트 생성 — registry로 위임.
+
+    이 함수는 phase2_bridge.py 등 기존 호출자가 그대로 쓰도록 유지.
+    실제 구현은 src.research_v2.registry로 이동했음.
 
     Args:
-        mode: "web_search" 또는 "deep_research"
-              단, Claude는 web_search만 지원 (DR API 없음)
+        mode: "web_search" (기본) 또는 "deep_research"
+              Claude는 mode 무관하게 항상 web_search
 
     Returns:
-        [Perplexity, OpenAI, Gemini, Claude] — 사용 가능한 것만
+        [Perplexity, OpenAI, Gemini, Claude]
     """
-    from src.research_v2.perplexity_adapter import PerplexityResearchAdapter
-    from src.research_v2.openai_adapter import OpenAIResearchAdapter
-    from src.research_v2.gemini_adapter import GeminiResearchAdapter
-    from src.research_v2.claude_adapter import ClaudeResearchAdapter
-
-    adapters: List[ResearchAdapter] = [
-        PerplexityResearchAdapter(mode=mode),
-        OpenAIResearchAdapter(mode=mode),
-        GeminiResearchAdapter(mode=mode),
-    ]
-
-    # Claude는 항상 web_search (DR 없음)
-    adapters.append(ClaudeResearchAdapter())
-
-    return adapters
+    from src.research_v2.registry import build_default_adapters as _build
+    return _build(mode=mode)
