@@ -357,7 +357,9 @@ def _build_payload(model: str, query: str, background: bool) -> Dict[str, Any]:
                             "You are an expert research assistant. "
                             "Provide a comprehensive, well-structured markdown report "
                             "with clear sections, headings, and cited sources. "
-                            "Use web_search to gather information from multiple sources."
+                            "Use web_search to gather information from multiple sources. "
+                            "IMPORTANT: For every factual claim, attach url_citation "
+                            "annotations referencing the source. Do not summarize without citations."
                         ),
                     }
                 ],
