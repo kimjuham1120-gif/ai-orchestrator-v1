@@ -189,6 +189,11 @@ class ResearchAdapter(ABC):
                 error=f"{type(exc).__name__}: {str(exc)[:200]}",
             )
 
+        # 정상 경로에서도 duration_ms 측정 (어댑터가 직접 안 채워도 보장)
+        # 어댑터가 이미 duration_ms 채웠으면 존중, 아니면 자동 측정값 사용
+        if not result.duration_ms:
+            result.duration_ms = int((time.time() - start) * 1000)
+
         # 정상 반환이지만 내용이 비어있으면 failed 취급
         if result.status == STATUS_SUCCESS and not result.report:
             result.status = STATUS_FAILED
