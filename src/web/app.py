@@ -47,7 +47,7 @@ except ImportError:
     pass
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -145,8 +145,9 @@ async def phase_1(project_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/project/{project_id}/phase-2")
-async def phase_2(project_id: str):
-    handle_phase_2(project_id, DB_PATH)
+async def phase_2(project_id: str, deep_research: str = Form(default="")):
+    mode = "deep_research" if deep_research else "web_search"
+    handle_phase_2(project_id, DB_PATH, mode=mode)
     return RedirectResponse(f"/project/{project_id}", status_code=303)
 
 
@@ -294,6 +295,119 @@ async def phase_7_verification(project_id: str, run_id: str = Form(...)):
 async def phase_7_finalize(project_id: str, run_id: str = Form(...)):
     handle_phase_7_finalize(run_id, DB_PATH)
     return RedirectResponse(f"/project/{project_id}/phase-7", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# 다운로드 — 보고서 파일로 받기
+# ---------------------------------------------------------------------------
+
+@app.get("/project/{project_id}/download/{format}")
+async def download_report(project_id: str, format: str):
+    """
+    프로젝트의 target_doc을 파일로 다운로드.
+
+    format:
+      - md   : 마크다운
+      - txt  : 일반 텍스트 (마크다운 마커 그대로)
+      - docx : 워드 문서 (python-docx 필요)
+    """
+    if format not in ("md", "txt", "docx"):
+        return Response("Invalid format. Use 'md', 'txt', or 'docx'.", status_code=400)
+
+    status = get_project_status(project_id, DB_PATH)
+    if not status["ok"]:
+        return Response("Project not found", status_code=404)
+
+    artifact = status["runs"][0] if status["runs"] else {}
+    target_doc = artifact.get("target_doc")
+    if not target_doc or not target_doc.get("document"):
+        return Response("No document available yet.", status_code=404)
+
+    document_text = target_doc["document"]
+
+    # 파일명 — 프로젝트 제목 사용 (한글 안전 처리)
+    import urllib.parse
+    title = (status["project"].get("title") or "report").strip()
+
+    # ASCII 안전 버전 (한글/특수문자 → _)
+    ascii_safe = "".join(
+        c if c.isascii() and (c.isalnum() or c in "-_.") else "_"
+        for c in title
+    )[:80].strip("_") or "report"
+
+    # UTF-8 인코딩된 원본 (RFC 5987)
+    utf8_encoded = urllib.parse.quote(title[:80])
+
+    filename_ascii = f"{ascii_safe}.{format}"
+    filename_utf8 = f"{utf8_encoded}.{format}"
+
+    # docx 형식: python-docx로 변환
+    if format == "docx":
+        try:
+            from io import BytesIO
+            from docx import Document
+            from docx.shared import Pt
+        except ImportError:
+            return Response(
+                "python-docx 라이브러리가 설치되어 있지 않습니다.\n"
+                "pip install python-docx",
+                status_code=500,
+                media_type="text/plain; charset=utf-8",
+            )
+
+        doc = Document()
+        # 기본 폰트
+        try:
+            doc.styles["Normal"].font.name = "맑은 고딕"
+            doc.styles["Normal"].font.size = Pt(11)
+        except Exception:
+            pass
+
+        # 마크다운을 매우 단순하게 워드로 변환
+        # # → Heading 1, ## → Heading 2, ### → Heading 3, --- → 빈줄
+        for line in document_text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                doc.add_paragraph("")
+                continue
+            if stripped.startswith("# "):
+                doc.add_heading(stripped[2:].strip(), level=1)
+            elif stripped.startswith("## "):
+                doc.add_heading(stripped[3:].strip(), level=2)
+            elif stripped.startswith("### "):
+                doc.add_heading(stripped[4:].strip(), level=3)
+            elif stripped.startswith("#### "):
+                doc.add_heading(stripped[5:].strip(), level=4)
+            elif stripped.startswith(("- ", "* ")):
+                doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            elif stripped == "---":
+                doc.add_paragraph("")
+            else:
+                # **bold** 처리는 스킵 — 워드에서 그냥 일반 텍스트
+                doc.add_paragraph(line)
+
+        buf = BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+
+        return Response(
+            content=buf.read(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{filename_utf8}",
+            },
+        )
+
+    # md / txt 형식
+    media_type = "text/markdown" if format == "md" else "text/plain"
+
+    return Response(
+        content=document_text,
+        media_type=f"{media_type}; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{filename_utf8}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

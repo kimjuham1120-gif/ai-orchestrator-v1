@@ -12,6 +12,49 @@
     </div>
 </section>
 
+{# ============================================================ #}
+{# 프로젝트 완료 시 — 결과 + 다운로드 (다른 단계 모두 숨김)        #}
+{# ============================================================ #}
+{% if project.current_phase == "phase_6_document_done" or project.status == "completed" %}
+<section class="phase-card" style="border: 2px solid #22c55e; background: #f0fdf4;">
+    <h3 style="color: #15803d; margin-top: 0;">✅ 프로젝트 완료</h3>
+    <p style="margin-bottom: 16px;">
+        보고서가 확정되었습니다. 아래에서 다운로드 받으세요.
+    </p>
+
+    <div class="action-group" style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;">
+        <a href="/project/{{ project.project_id }}/download/docx"
+           class="btn btn-primary"
+           download>
+            📄 Word (.docx) 다운로드 ★
+        </a>
+        <a href="/project/{{ project.project_id }}/download/md"
+           class="btn btn-secondary"
+           download>
+            📥 마크다운 (.md)
+        </a>
+        <a href="/project/{{ project.project_id }}/download/txt"
+           class="btn btn-secondary"
+           download>
+            📥 텍스트 (.txt)
+        </a>
+    </div>
+
+    {% if artifact.target_doc %}
+    <details open style="margin-top: 20px;">
+        <summary style="cursor: pointer; font-weight: 600; padding: 8px 0;">
+            📄 보고서 전문 (클릭해서 접기/펼치기)
+        </summary>
+        <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 600px; overflow-y: auto; padding: 16px; background: white; border-radius: 6px; margin-top: 12px;">{{ artifact.target_doc.document }}</pre>
+    </details>
+    {% endif %}
+</section>
+
+{% else %}
+{# ============================================================ #}
+{# 진행 중일 때만 단계별 카드 표시                                #}
+{# ============================================================ #}
+
 {# Phase 0.5 결과 #}
 {% if artifact.feasibility_result %}
 <section class="phase-card">
@@ -48,6 +91,17 @@
 
     {% if not artifact.parallel_research %}
     <form method="POST" action="/project/{{ project.project_id }}/phase-2">
+        <div class="form-group" style="margin-bottom: 12px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" name="deep_research" value="1">
+                <span>
+                    <strong>Deep Research 모드</strong>
+                    <small style="display: block; color: #888; margin-top: 2px;">
+                        느림 (수 분~10+) · 비용 ↑ (~$0.5/서브주제) · 품질 ↑
+                    </small>
+                </span>
+            </label>
+        </div>
         <button type="submit" class="btn btn-primary">▶ Phase 2 · 병렬 리서치 시작</button>
         <small class="warn">⏱️ 이 단계는 수십 초 ~ 수 분 걸릴 수 있습니다.</small>
     </form>
@@ -91,7 +145,7 @@
 
     {% if not artifact.target_doc %}
     <form method="POST" action="/project/{{ project.project_id }}/phase-3">
-        <button type="submit" class="btn btn-primary">▶ Phase 3 · 2문서 합성</button>
+        <button type="submit" class="btn btn-primary">▶ Phase 3 · 보고서 초안 생성</button>
     </form>
     {% endif %}
 </section>
@@ -100,17 +154,17 @@
 {# Phase 3 결과 #}
 {% if artifact.target_doc %}
 <section class="phase-card">
-    <h3>Phase 3 · 2문서 합성 완료</h3>
-    {% if artifact.base_info_doc %}
-    <details>
-        <summary>기반정보 문서 (3a)</summary>
-        <div class="doc-preview">{{ artifact.base_info_doc.document[:500] }}...</div>
-    </details>
-    {% endif %}
+    <h3>Phase 3 · 보고서 초안 완성</h3>
     <details open>
-        <summary>목표 산출물 초안 (3b)</summary>
+        <summary>📄 보고서 (목표 산출물)</summary>
         <div class="doc-preview">{{ artifact.target_doc.document[:1000] }}...</div>
     </details>
+    {% if artifact.base_info_doc %}
+    <details>
+        <summary style="color: #888; font-size: 0.9em;">기반정보 (앱개발 시 사용 · 일반 사용자는 무시 가능)</summary>
+        <div class="doc-preview" style="opacity: 0.7;">{{ artifact.base_info_doc.document[:500] }}...</div>
+    </details>
+    {% endif %}
 
     {% if not artifact.cross_audit_v4 %}
     <div class="action-group">
@@ -153,5 +207,7 @@
     <a href="/project/{{ project.project_id }}/phase-5" class="btn btn-primary">▶ Phase 5 · 사용자 검수로 이동</a>
 </section>
 {% endif %}
+
+{% endif %}{# 진행 중 분기 닫기 #}
 
 {% endblock %}

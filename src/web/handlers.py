@@ -180,8 +180,13 @@ def handle_phase_1(project_id: str, db_path: str) -> Dict[str, Any]:
 # Phase 2 · 병렬 리서치
 # ---------------------------------------------------------------------------
 
-def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
-    """Phase 2 실행 — 동기 + 타임아웃 방식 (MVP)."""
+def handle_phase_2(project_id: str, db_path: str, mode: str = "web_search") -> Dict[str, Any]:
+    """
+    Phase 2 실행 — 동기 + 타임아웃 방식 (MVP).
+
+    Args:
+        mode: "web_search" (기본, 빠름/저렴) 또는 "deep_research" (느림/품질↑)
+    """
     try:
         from src.research_v2.phase2_bridge import (
             run_phase_2_research as run_parallel_research, AllSubtopicsFailedError,
@@ -205,7 +210,7 @@ def handle_phase_2(project_id: str, db_path: str) -> Dict[str, Any]:
     )
 
     try:
-        result = run_parallel_research(subtopics)
+        result = run_parallel_research(subtopics, mode=mode)
     except AllSubtopicsFailedError as exc:
         update_artifact(db_path, runs[0]["run_id"], {
             "phase": "phase_2",
