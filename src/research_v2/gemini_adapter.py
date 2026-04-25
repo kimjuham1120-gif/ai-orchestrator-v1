@@ -407,7 +407,9 @@ class GeminiResearchAdapter(ResearchAdapter):
                 raw_meta={"finish_reason": finish},
             )
 
-        citations = _extract_grounding_citations(candidate.get("grounding_metadata"))
+        citations = _extract_grounding_citations(
+            candidate.get("groundingMetadata") or candidate.get("grounding_metadata")
+        )
 
         usage = body.get("usageMetadata") or {}
         cost = _calculate_cost(usage, self._config)
@@ -464,7 +466,7 @@ def _extract_text_from_parts(content: Any) -> str:
 def _extract_grounding_citations(grounding_metadata: Any) -> List[ResearchCitation]:
     if not isinstance(grounding_metadata, dict):
         return []
-    chunks = grounding_metadata.get("grounding_chunks")
+    chunks = grounding_metadata.get("groundingChunks") or grounding_metadata.get("grounding_chunks")
     if not isinstance(chunks, list):
         return []
     result: List[ResearchCitation] = []
