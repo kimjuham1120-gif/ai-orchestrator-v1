@@ -59,6 +59,7 @@ _JSON_COLS_V4 = {
     "cross_audit_v4",       # Phase 4
     "doc_versions",         # Phase 5
     "feedback_history",     # Phase 5
+    "bridge_decision",      # Phase 6
 }
 
 # 전체 JSON 컬럼 (v3 + v4)
