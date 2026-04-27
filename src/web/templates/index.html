@@ -11,7 +11,7 @@
     </p>
 </section>
 
-<form method="POST" action="/projects" class="form-card">
+<form method="POST" action="/projects" class="form-card" enctype="multipart/form-data">
     <label for="raw_input">요청 내용</label>
     <textarea
         id="raw_input"
@@ -22,6 +22,20 @@
 예) 재고관리 시스템 만들어줘"
         required
     ></textarea>
+
+    <label for="template_file" style="margin-top: 16px; display: block;">
+        양식 파일 <small style="color: #888; font-weight: normal;">(선택 · .docx · .md · .txt)</small>
+    </label>
+    <input
+        type="file"
+        id="template_file"
+        name="template_file"
+        accept=".docx,.md,.txt,text/markdown,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        style="display: block; margin-top: 6px;"
+    >
+    <small style="color: #888; display: block; margin-top: 4px;">
+        ※ 양식 파일을 올리면, 이 양식의 구조·항목을 따라 결과물이 생성됩니다.
+    </small>
 
     <div class="form-actions">
         <button type="submit" class="btn btn-primary">프로젝트 시작</button>

@@ -38,9 +38,18 @@ def _new_project_id() -> str:
 # Phase 0.5 · 처리 가능성 게이트
 # ---------------------------------------------------------------------------
 
-def handle_phase_0_5(raw_input: str, db_path: str) -> Dict[str, Any]:
+def handle_phase_0_5(
+    raw_input: str,
+    db_path: str,
+    template_text: str = "",
+) -> Dict[str, Any]:
     """
     새 프로젝트 생성 + Phase 0.5 실행.
+
+    Args:
+      raw_input: 사용자 요청
+      db_path: DB 경로
+      template_text: 양식 파일 텍스트 (선택, Phase 3에서 사용)
 
     Returns:
       {
@@ -104,6 +113,7 @@ def handle_phase_0_5(raw_input: str, db_path: str) -> Dict[str, Any]:
             "phase": "phase_0_5",
             "raw_input": text,
             "feasibility_result": result.to_dict(),
+            "template_text": template_text or None,  # 양식 파일 텍스트 (선택)
             "run_status": "phase_0_5_done",
         })
     except Exception:
@@ -267,6 +277,9 @@ def handle_phase_3(project_id: str, db_path: str) -> Dict[str, Any]:
     if not research:
         return {"ok": False, "error": "리서치 결과 없음 — Phase 2 먼저 실행"}
 
+    # 양식 파일 텍스트 (Phase 0.5에서 저장됨, 선택)
+    template_text = artifact.get("template_text") or ""
+
     set_llm_context(
         db_path=db_path,
         project_id=project_id,
@@ -275,7 +288,11 @@ def handle_phase_3(project_id: str, db_path: str) -> Dict[str, Any]:
     )
 
     try:
-        result = synthesize_documents(project["raw_input"], research)
+        result = synthesize_documents(
+            project["raw_input"],
+            research,
+            template_text=template_text,
+        )
     except Exception as exc:
         clear_llm_context()
         return {"ok": False, "error": f"Phase 3 실행 실패: {exc}"}

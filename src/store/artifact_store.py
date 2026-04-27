@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     cross_audit_v4       TEXT,
     doc_versions         TEXT,
     feedback_history     TEXT,
-    bridge_decision      TEXT
+    bridge_decision      TEXT,
+    template_text        TEXT
 )
 """
 
@@ -209,6 +210,7 @@ _V4_NEW_COLUMNS = [
     ("doc_versions",       "TEXT"),
     ("feedback_history",   "TEXT"),
     ("bridge_decision",    "TEXT"),
+    ("template_text",      "TEXT"),
 ]
 
 

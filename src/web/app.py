@@ -46,7 +46,7 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -92,8 +92,22 @@ async def index(request: Request):
 
 
 @app.post("/projects")
-async def create_project(request: Request, raw_input: str = Form("")):
-    result = handle_phase_0_5(raw_input, DB_PATH)
+async def create_project(
+    request: Request,
+    raw_input: str = Form(""),
+    template_file: UploadFile = File(None),
+):
+    # 양식 파일 파싱 (선택사항)
+    template_text = ""
+    if template_file and template_file.filename:
+        try:
+            template_text = await _extract_template_text(template_file)
+        except Exception as e:
+            return templates.TemplateResponse(request, "index.html", {
+                "error": f"양식 파일을 읽을 수 없습니다: {e}",
+            })
+
+    result = handle_phase_0_5(raw_input, DB_PATH, template_text=template_text)
     if not result["ok"]:
         return templates.TemplateResponse(request, "index.html", {
             "error": result.get("error")},
@@ -363,28 +377,8 @@ async def download_report(project_id: str, format: str):
         except Exception:
             pass
 
-        # 마크다운을 매우 단순하게 워드로 변환
-        # # → Heading 1, ## → Heading 2, ### → Heading 3, --- → 빈줄
-        for line in document_text.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                doc.add_paragraph("")
-                continue
-            if stripped.startswith("# "):
-                doc.add_heading(stripped[2:].strip(), level=1)
-            elif stripped.startswith("## "):
-                doc.add_heading(stripped[3:].strip(), level=2)
-            elif stripped.startswith("### "):
-                doc.add_heading(stripped[4:].strip(), level=3)
-            elif stripped.startswith("#### "):
-                doc.add_heading(stripped[5:].strip(), level=4)
-            elif stripped.startswith(("- ", "* ")):
-                doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
-            elif stripped == "---":
-                doc.add_paragraph("")
-            else:
-                # **bold** 처리는 스킵 — 워드에서 그냥 일반 텍스트
-                doc.add_paragraph(line)
+        # 마크다운 → docx 변환 (헬퍼 함수에서 처리)
+        _markdown_to_docx(doc, document_text)
 
         buf = BytesIO()
         doc.save(buf)
@@ -408,6 +402,308 @@ async def download_report(project_id: str, format: str):
             "Content-Disposition": f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{filename_utf8}",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 양식 파일 → 텍스트 추출
+# ---------------------------------------------------------------------------
+
+async def _extract_template_text(upload: "UploadFile") -> str:
+    """
+    업로드된 양식 파일을 텍스트로 변환.
+
+    지원 형식:
+      - .docx : python-docx로 단락별 텍스트 추출
+      - .md, .txt, 기타 텍스트 : 그대로 디코드 (UTF-8)
+
+    크기 제한: 200KB (LLM 토큰 폭발 방지)
+    """
+    MAX_BYTES = 200 * 1024  # 200KB
+
+    # 비동기 read
+    content = await upload.read()
+    if not content:
+        return ""
+    if len(content) > MAX_BYTES:
+        raise ValueError(
+            f"양식 파일이 너무 큽니다 ({len(content)//1024}KB). "
+            f"최대 {MAX_BYTES//1024}KB까지 허용됩니다."
+        )
+
+    filename = (upload.filename or "").lower()
+
+    # docx
+    if filename.endswith(".docx"):
+        try:
+            from io import BytesIO
+            from docx import Document
+        except ImportError:
+            raise ValueError("python-docx 라이브러리 필요 (pip install python-docx)")
+
+        try:
+            doc = Document(BytesIO(content))
+        except Exception as e:
+            raise ValueError(f".docx 파일 읽기 실패: {e}")
+
+        lines = []
+        for para in doc.paragraphs:
+            text = (para.text or "").strip()
+            if text:
+                lines.append(text)
+        # 표도 추출
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                if row_text.strip(" |"):
+                    lines.append(row_text)
+
+        return "\n".join(lines).strip()
+
+    # md / txt / 그 외 — 텍스트로 디코드
+    for encoding in ("utf-8", "utf-8-sig", "cp949", "euc-kr"):
+        try:
+            return content.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+
+    # 모두 실패
+    raise ValueError("파일 인코딩을 인식할 수 없습니다 (UTF-8/CP949/EUC-KR 시도)")
+
+
+# ---------------------------------------------------------------------------
+# Markdown → docx 변환 헬퍼
+# ---------------------------------------------------------------------------
+
+def _markdown_to_docx(doc, text: str) -> None:
+    """
+    마크다운 텍스트를 docx Document에 추가.
+
+    지원하는 형식:
+      - # / ## / ### / #### 헤딩
+      - - / * 글머리표
+      - 1. 2. 3. 번호 매기기
+      - **bold** / *italic*
+      - [text](url) 링크 (텍스트만, 하이퍼링크 X)
+      - 마크다운 표 (| col1 | col2 |)
+      - --- 구분선 (빈 줄)
+      - ``` 코드 블록 (고정폭 폰트 단락)
+
+    제한:
+      - 중첩 리스트 미지원 (1단 평면)
+      - 이미지 미지원
+      - 인라인 코드 ` ` 는 일반 텍스트로
+    """
+    lines = text.split("\n")
+    i = 0
+    in_code_block = False
+    code_buffer = []
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # ----- 코드 블록 -----
+        if stripped.startswith("```"):
+            if in_code_block:
+                # 닫는 ```
+                _add_code_block(doc, "\n".join(code_buffer))
+                code_buffer = []
+                in_code_block = False
+            else:
+                # 여는 ```
+                in_code_block = True
+            i += 1
+            continue
+
+        if in_code_block:
+            code_buffer.append(line)
+            i += 1
+            continue
+
+        # ----- 빈 줄 -----
+        if not stripped:
+            doc.add_paragraph("")
+            i += 1
+            continue
+
+        # ----- 표 (헤더 + 구분 + 데이터) -----
+        if stripped.startswith("|") and i + 1 < len(lines):
+            next_line = lines[i + 1].strip()
+            # 표 구분선 패턴: |---|---|
+            if next_line.startswith("|") and "-" in next_line:
+                table_lines = []
+                j = i
+                while j < len(lines) and lines[j].strip().startswith("|"):
+                    table_lines.append(lines[j])
+                    j += 1
+                _add_markdown_table(doc, table_lines)
+                i = j
+                continue
+
+        # ----- 헤딩 -----
+        if stripped.startswith("# "):
+            doc.add_heading(_strip_inline_marks(stripped[2:].strip()), level=1)
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            doc.add_heading(_strip_inline_marks(stripped[3:].strip()), level=2)
+            i += 1
+            continue
+        if stripped.startswith("### "):
+            doc.add_heading(_strip_inline_marks(stripped[4:].strip()), level=3)
+            i += 1
+            continue
+        if stripped.startswith("#### "):
+            doc.add_heading(_strip_inline_marks(stripped[5:].strip()), level=4)
+            i += 1
+            continue
+
+        # ----- 구분선 -----
+        if stripped == "---" or stripped == "***":
+            doc.add_paragraph("")
+            i += 1
+            continue
+
+        # ----- 글머리표 -----
+        if stripped.startswith(("- ", "* ")):
+            para = doc.add_paragraph(style="List Bullet")
+            _add_inline_runs(para, stripped[2:].strip())
+            i += 1
+            continue
+
+        # ----- 번호 매기기 (1. 2. 3.) -----
+        import re
+        m = re.match(r"^(\d+)\.\s+(.*)", stripped)
+        if m:
+            para = doc.add_paragraph(style="List Number")
+            _add_inline_runs(para, m.group(2))
+            i += 1
+            continue
+
+        # ----- 일반 단락 (인라인 마크업 처리) -----
+        para = doc.add_paragraph()
+        _add_inline_runs(para, line)
+        i += 1
+
+
+def _add_inline_runs(paragraph, text: str) -> None:
+    """
+    문자열 안의 **bold**, *italic*, [link](url) 등을
+    여러 Run으로 분리하여 paragraph에 추가.
+    """
+    import re
+
+    # 토큰 패턴: **bold** | *italic* | [text](url)
+    # 순서 중요: **를 먼저 매칭 (그렇지 않으면 *italic*과 충돌)
+    pattern = re.compile(
+        r"(\*\*([^*]+)\*\*)"        # group 1,2: **bold**
+        r"|(\*([^*]+)\*)"           # group 3,4: *italic*
+        r"|(\[([^\]]+)\]\(([^)]+)\))"  # group 5,6,7: [text](url)
+    )
+
+    pos = 0
+    for m in pattern.finditer(text):
+        # 매칭 전 일반 텍스트
+        if m.start() > pos:
+            paragraph.add_run(text[pos:m.start()])
+
+        if m.group(1):  # **bold**
+            run = paragraph.add_run(m.group(2))
+            run.bold = True
+        elif m.group(3):  # *italic*
+            run = paragraph.add_run(m.group(4))
+            run.italic = True
+        elif m.group(5):  # [text](url)
+            link_text = m.group(6)
+            url = m.group(7)
+            # 단순 처리: 텍스트만 표시 + URL을 괄호로 (하이퍼링크 추가는 복잡)
+            run = paragraph.add_run(f"{link_text}")
+            run.underline = True
+            run.font.color.rgb = None  # 기본 색상 유지
+            # URL 별도 표시
+            paragraph.add_run(f" ({url})")
+
+        pos = m.end()
+
+    # 남은 일반 텍스트
+    if pos < len(text):
+        paragraph.add_run(text[pos:])
+
+
+def _strip_inline_marks(text: str) -> str:
+    """헤딩 텍스트에서 인라인 마크업 제거 (간단히)."""
+    import re
+    # **bold** → bold
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    # *italic* → italic
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    # [text](url) → text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text.strip()
+
+
+def _add_code_block(doc, code: str) -> None:
+    """코드 블록을 고정폭 폰트 단락으로 추가."""
+    para = doc.add_paragraph()
+    run = para.add_run(code)
+    try:
+        from docx.shared import Pt
+        run.font.name = "Consolas"
+        run.font.size = Pt(10)
+    except Exception:
+        pass
+
+
+def _add_markdown_table(doc, table_lines: list) -> None:
+    """
+    마크다운 표 라인 목록을 docx Table로 변환.
+
+    table_lines 예시:
+      ['| Header1 | Header2 |',
+       '|---------|---------|',
+       '| Data1   | Data2   |',
+       '| Data3   | Data4   |']
+    """
+    # 각 행을 셀로 분해
+    rows = []
+    for line in table_lines:
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        # 양 끝 | 제거 후 분리
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows.append(cells)
+
+    if len(rows) < 2:
+        return  # 헤더 + 구분선 최소 2줄 필요
+
+    # 두 번째 줄(구분선) 제거
+    header = rows[0]
+    data_rows = rows[2:] if len(rows) > 2 else []
+
+    # docx 표 생성
+    n_cols = len(header)
+    n_rows = 1 + len(data_rows)
+    table = doc.add_table(rows=n_rows, cols=n_cols)
+    table.style = "Light Grid Accent 1"  # 기본 격자 스타일
+
+    # 헤더
+    hdr_cells = table.rows[0].cells
+    for j, cell_text in enumerate(header):
+        if j < n_cols:
+            hdr_cells[j].text = ""
+            para = hdr_cells[j].paragraphs[0]
+            run = para.add_run(_strip_inline_marks(cell_text))
+            run.bold = True
+
+    # 데이터
+    for i, row in enumerate(data_rows):
+        cells = table.rows[i + 1].cells
+        for j, cell_text in enumerate(row):
+            if j < n_cols:
+                cells[j].text = ""
+                para = cells[j].paragraphs[0]
+                _add_inline_runs(para, _strip_inline_marks(cell_text))
 
 
 # ---------------------------------------------------------------------------
