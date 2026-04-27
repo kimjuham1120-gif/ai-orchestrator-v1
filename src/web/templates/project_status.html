@@ -13,9 +13,53 @@
 </section>
 
 {# ============================================================ #}
-{# 프로젝트 완료 시 — 결과 + 다운로드 (다른 단계 모두 숨김)        #}
+{# 앱개발 프로젝트는 별도 화면으로 안내                            #}
 {# ============================================================ #}
-{% if project.current_phase == "phase_6_document_done" or project.status == "completed" %}
+{% if project.project_type == "app_dev" %}
+<section class="phase-card" style="border: 2px solid #3b82f6; background: #eff6ff;">
+    <h3 style="color: #1e40af; margin-top: 0;">🔧 앱개발 프로젝트</h3>
+
+    {% if artifact.referenced_context and artifact.referenced_context.files %}
+    <p style="margin-bottom: 8px;">
+        <strong>업로드된 기획문서:</strong> {{ artifact.referenced_context.files|length }}개 파일
+        ({{ (artifact.referenced_context.files|sum(attribute='size_bytes') / 1024)|round(1) }}KB)
+    </p>
+    <details style="margin-bottom: 16px;">
+        <summary style="cursor: pointer; color: #1e40af;">파일 목록 보기</summary>
+        <ul style="margin-top: 8px;">
+            {% for f in artifact.referenced_context.files %}
+            <li>{{ f.filename }} <small style="color: #888;">({{ (f.size_bytes / 1024)|round(1) }}KB)</small></li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% else %}
+    <p style="color: #888; margin-bottom: 16px;">
+        ※ 기획문서가 첨부되지 않았습니다. Todo 분해 품질이 떨어질 수 있어요.
+    </p>
+    {% endif %}
+
+    {% set todo_status = artifact.todo_status %}
+    {% if not artifact.todo_list or not artifact.todo_list["items"] %}
+        {# Todo 아직 안 만들었음 #}
+        <form method="POST" action="/project/{{ project.project_id }}/app-dev/generate-todos">
+            <button type="submit" class="btn btn-primary">▶ Todo 분해 시작 (LLM 호출)</button>
+            <small class="warn" style="display: block; margin-top: 6px;">
+                ⏱️ 30~120초 소요. 비용: ~$0.02~0.05.
+            </small>
+        </form>
+    {% else %}
+        {# Todo 만들어졌음 — 검토/승인 화면으로 이동 #}
+        <p style="margin-bottom: 12px;">
+            <strong>Todo 분해 완료:</strong> {{ artifact.todo_list["items"]|length }}개 작업 단위 ·
+            상태: <span class="badge">{{ todo_status }}</span>
+        </p>
+        <a href="/project/{{ project.project_id }}/app-dev/todos" class="btn btn-primary">
+            📋 TodoList 검토 / 승인
+        </a>
+    {% endif %}
+</section>
+
+{% elif project.current_phase == "phase_6_document_done" or project.status == "completed" %}
 <section class="phase-card" style="border: 2px solid #22c55e; background: #f0fdf4;">
     <h3 style="color: #15803d; margin-top: 0;">✅ 프로젝트 완료</h3>
     <p style="margin-bottom: 16px;">

@@ -167,6 +167,55 @@ async def project_status(project_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Step 15 · 앱개발 — Todo 생성 / 검토 / 승인
+# ---------------------------------------------------------------------------
+
+@app.get("/project/{project_id}/app-dev/todos", response_class=HTMLResponse)
+async def app_dev_todos_page(project_id: str, request: Request):
+    """TodoList 페이지 — 검토 + 승인 폼."""
+    status = get_project_status(project_id, DB_PATH)
+    if not status["ok"]:
+        return templates.TemplateResponse(request, "index.html", {
+            "error": status.get("error"),
+        })
+
+    project = status["project"]
+    artifact = status["runs"][0] if status["runs"] else {}
+
+    if project.get("project_type") != "app_dev":
+        return templates.TemplateResponse(request, "index.html", {
+            "error": "앱개발 프로젝트가 아닙니다",
+        })
+
+    return templates.TemplateResponse(request, "app_dev_todos.html", {
+        "project": project,
+        "artifact": artifact,
+    })
+
+
+@app.post("/project/{project_id}/app-dev/generate-todos")
+async def app_dev_generate_todos(project_id: str):
+    """Todo 생성 (LLM 호출) — referenced_context를 N개 작업 단위로 분해."""
+    from src.web.handlers import handle_generate_todos
+    handle_generate_todos(project_id, DB_PATH)
+    return RedirectResponse(
+        f"/project/{project_id}/app-dev/todos",
+        status_code=303,
+    )
+
+
+@app.post("/project/{project_id}/app-dev/approve-todos")
+async def app_dev_approve_todos(project_id: str):
+    """운영자 승인 → todo_status='approved'."""
+    from src.web.handlers import handle_approve_todos
+    handle_approve_todos(project_id, DB_PATH)
+    return RedirectResponse(
+        f"/project/{project_id}/app-dev/todos",
+        status_code=303,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 — 서브주제 분해
 # ---------------------------------------------------------------------------
 

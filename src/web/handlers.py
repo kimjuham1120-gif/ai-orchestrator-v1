@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from src.store.artifact_store import (
-    load_project, save_project, update_project_phase,
+    load_project, save_project, update_project, update_project_phase,
     list_project_runs, update_artifact, save_artifact,
     utc_now_iso,
 )
@@ -139,6 +139,103 @@ def handle_phase_0_5(
         "decided_by": result.decided_by,
         "error": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Step 15 · 앱개발 — Todo 생성 & 승인
+# ---------------------------------------------------------------------------
+
+def handle_generate_todos(project_id: str, db_path: str) -> Dict[str, Any]:
+    """
+    프로젝트의 referenced_context를 todo_planner LLM에 전달 → N개 작업 단위 생성.
+
+    Returns:
+      {
+        "ok": bool,
+        "n_items": int,
+        "error": Optional[str],
+      }
+    """
+    project = load_project(db_path, project_id)
+    if not project:
+        return {"ok": False, "error": "프로젝트를 찾을 수 없습니다"}
+
+    if project.get("project_type") != "app_dev":
+        return {"ok": False, "error": "앱개발 프로젝트가 아닙니다"}
+
+    runs = list_project_runs(db_path, project_id)
+    if not runs:
+        return {"ok": False, "error": "artifact가 없습니다"}
+
+    artifact = runs[-1]
+    referenced_context = artifact.get("referenced_context")
+
+    # LLM 컨텍스트 (비용 추적용)
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase="todo_planner",
+    )
+
+    try:
+        from src.app_dev.todo_planner import generate_todo_list
+        result = generate_todo_list(
+            raw_input=project["raw_input"],
+            referenced_context=referenced_context,
+        )
+    except Exception as exc:
+        clear_llm_context()
+        return {"ok": False, "error": f"todo_planner 실행 실패: {exc}"}
+
+    clear_llm_context()
+
+    if not result.ok:
+        return {"ok": False, "error": result.error or "Todo 생성 실패"}
+
+    # artifact에 todo_list 저장
+    update_artifact(db_path, artifact["run_id"], {
+        "todo_list": result.to_dict(),
+        "todo_status": "pending_approval",  # 운영자 승인 대기
+        "current_todo_idx": 0,
+    })
+
+    return {"ok": True, "n_items": len(result.items), "error": None}
+
+
+def handle_approve_todos(project_id: str, db_path: str) -> Dict[str, Any]:
+    """
+    운영자가 TodoList 검토 후 [전체 승인] 클릭.
+    todo_status를 "approved"로 변경. 다음 단계(A5: incremental_builder)에서 사용.
+
+    Returns:
+      {"ok": bool, "error": Optional[str]}
+    """
+    project = load_project(db_path, project_id)
+    if not project:
+        return {"ok": False, "error": "프로젝트를 찾을 수 없습니다"}
+
+    runs = list_project_runs(db_path, project_id)
+    if not runs:
+        return {"ok": False, "error": "artifact가 없습니다"}
+
+    artifact = runs[-1]
+    todo_list = artifact.get("todo_list")
+    if not todo_list or not todo_list.get("items"):
+        return {"ok": False, "error": "승인할 Todo가 없습니다 (먼저 Todo 생성)"}
+
+    update_artifact(db_path, artifact["run_id"], {
+        "todo_status": "approved",
+        "current_todo_idx": 0,
+    })
+
+    # projects 테이블 current_phase도 업데이트
+    update_project(db_path, project_id, {
+        "current_phase": "app_dev_todos_approved",
+        "updated_at": utc_now_iso(),
+    })
+
+    return {"ok": True, "error": None}
 
 
 # ---------------------------------------------------------------------------

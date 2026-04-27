@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project.title }} — TodoList — AI Orchestrator v4{% endblock %}
+
+{% block content %}
+<section class="project-header">
+    <h2>{{ project.title }} <small style="color: #888; font-weight: normal;">— 앱개발 TodoList</small></h2>
+    <div class="project-meta">
+        <span class="badge">{{ artifact.todo_status or "—" }}</span>
+        <a href="/project/{{ project.project_id }}" class="meta">← 프로젝트로</a>
+    </div>
+</section>
+
+{% if not artifact.todo_list or not artifact.todo_list["items"] %}
+{# Todo가 없는 상태 — 안내 #}
+<section class="phase-card">
+    <h3>아직 Todo가 분해되지 않았습니다.</h3>
+    <p>프로젝트 화면으로 돌아가 [Todo 분해 시작]을 눌러주세요.</p>
+    <a href="/project/{{ project.project_id }}" class="btn btn-secondary">← 프로젝트로</a>
+</section>
+
+{% else %}
+
+{% set todo_items = artifact.todo_list["items"] %}
+{% set is_approved = artifact.todo_status == "approved" %}
+
+{# ============================================================ #}
+{# 요약 카드                                                     #}
+{# ============================================================ #}
+<section class="phase-card" style="border: 1px solid #ddd;">
+    <h3 style="margin-top: 0;">
+        📋 작업 분해 — {{ todo_items|length }}개 단위
+    </h3>
+    <p class="meta">
+        ※ 한 단위 = 30~60분 분량 (UI에서 30초 안에 확인 가능한 크기)
+    </p>
+
+    {# 타입별 통계 #}
+    <div class="meta" style="margin-top: 8px;">
+        {% set type_counts = {} %}
+        {% for item in todo_items %}
+            {% set _ = type_counts.update({item.type: type_counts.get(item.type, 0) + 1}) %}
+        {% endfor %}
+        {% for t, c in type_counts.items() %}
+            <span class="badge" style="margin-right: 6px;">{{ t }}: {{ c }}</span>
+        {% endfor %}
+    </div>
+</section>
+
+{# ============================================================ #}
+{# 작업 단위 목록                                                #}
+{# ============================================================ #}
+<ol style="list-style: none; padding-left: 0; counter-reset: todo-counter;">
+{% for item in todo_items %}
+<li class="phase-card" style="counter-increment: todo-counter; padding: 16px; margin-bottom: 12px;">
+    <div style="display: flex; gap: 12px; align-items: flex-start;">
+        <div style="
+            min-width: 36px; height: 36px; border-radius: 50%;
+            background: #3b82f6; color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold;
+        ">
+            {{ loop.index }}
+        </div>
+        <div style="flex: 1;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <h4 style="margin: 0; flex: 1;">{{ item.title }}</h4>
+                <span class="badge" style="background: #e5e7eb; color: #374151;">
+                    {{ item.type }}
+                </span>
+                <span class="badge" style="background: #f3f4f6; color: #6b7280;">
+                    {{ item.status }}
+                </span>
+            </div>
+
+            {% if item.description %}
+            <p style="margin: 8px 0; color: #4b5563;">{{ item.description }}</p>
+            {% endif %}
+
+            {% if item.estimated_files %}
+            <details style="margin-top: 6px;">
+                <summary style="cursor: pointer; font-size: 0.9em; color: #6b7280;">
+                    📁 예상 파일 ({{ item.estimated_files|length }}개)
+                </summary>
+                <ul style="margin-top: 6px; font-size: 0.9em;">
+                    {% for f in item.estimated_files %}
+                    <li><code>{{ f }}</code></li>
+                    {% endfor %}
+                </ul>
+            </details>
+            {% endif %}
+        </div>
+    </div>
+</li>
+{% endfor %}
+</ol>
+
+{# ============================================================ #}
+{# 승인 / 재생성 액션                                            #}
+{# ============================================================ #}
+{% if is_approved %}
+<section class="phase-card" style="border: 2px solid #22c55e; background: #f0fdf4;">
+    <h3 style="color: #15803d; margin-top: 0;">✅ TodoList 승인 완료</h3>
+    <p style="margin-bottom: 16px;">
+        다음 단계는 <strong>각 작업 단위를 점진적으로 빌드</strong>하는 것입니다.
+        (다음 세션에서 구현 예정)
+    </p>
+    <p style="color: #6b7280;">
+        ※ 현재 단계: A4 (TodoList 승인) ✅<br>
+        ※ 다음 단계: A5 (incremental_builder) — 곧 구현됩니다.
+    </p>
+</section>
+
+{% else %}
+<section class="phase-card" style="border: 2px solid #3b82f6; background: #eff6ff;">
+    <h3 style="color: #1e40af; margin-top: 0;">검토 후 승인</h3>
+    <p style="margin-bottom: 16px;">
+        위 작업 분해가 적절한지 확인하세요. 승인 후엔 변경할 수 없습니다.
+        <br>
+        <small style="color: #6b7280;">
+            ※ 수정·삭제·순서 변경 기능은 다음 단계에서 추가됩니다 (Phase A는 검토만).
+        </small>
+    </p>
+
+    <div class="action-group" style="display: flex; gap: 12px; flex-wrap: wrap;">
+        <form method="POST" action="/project/{{ project.project_id }}/app-dev/approve-todos"
+              style="display: inline;">
+            <button type="submit" class="btn btn-primary">✅ 전체 승인</button>
+        </form>
+
+        <form method="POST" action="/project/{{ project.project_id }}/app-dev/generate-todos"
+              style="display: inline;">
+            <button type="submit" class="btn btn-secondary">🔄 재생성 (다시 LLM 호출)</button>
+        </form>
+    </div>
+</section>
+{% endif %}
+
+{% endif %}
+
+{% endblock %}
