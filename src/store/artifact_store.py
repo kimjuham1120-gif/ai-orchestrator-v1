@@ -60,6 +60,8 @@ _JSON_COLS_V4 = {
     "doc_versions",         # Phase 5
     "feedback_history",     # Phase 5
     "bridge_decision",      # Phase 6
+    "referenced_context",   # Step 15: 업로드된 기획문서 묶음
+    "todo_list",            # Step 15: 작업 단위 목록
 }
 
 # 전체 JSON 컬럼 (v3 + v4)
@@ -153,7 +155,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
     doc_versions         TEXT,
     feedback_history     TEXT,
     bridge_decision      TEXT,
-    template_text        TEXT
+    template_text        TEXT,
+
+    -- Step 15 (Phase A): 점진적 앱개발
+    project_type         TEXT,
+    referenced_context   TEXT,
+    todo_list            TEXT,
+    current_todo_idx     INTEGER DEFAULT 0,
+    todo_status          TEXT,
+    preview_port         INTEGER
 )
 """
 
@@ -166,7 +176,8 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at      TEXT,
     updated_at      TEXT,
     current_phase   TEXT,
-    status          TEXT
+    status          TEXT,
+    project_type    TEXT DEFAULT 'doc_generation'
 )
 """
 
@@ -211,6 +222,13 @@ _V4_NEW_COLUMNS = [
     ("feedback_history",   "TEXT"),
     ("bridge_decision",    "TEXT"),
     ("template_text",      "TEXT"),
+    # Step 15 — 점진적 앱개발
+    ("project_type",       "TEXT"),
+    ("referenced_context", "TEXT"),
+    ("todo_list",          "TEXT"),
+    ("current_todo_idx",   "INTEGER DEFAULT 0"),
+    ("todo_status",        "TEXT"),
+    ("preview_port",       "INTEGER"),
 ]
 
 
@@ -219,10 +237,19 @@ def _ensure_v4_columns(conn: sqlite3.Connection) -> None:
     기존 v3 DB에 v4 컬럼을 ALTER TABLE로 추가.
     이미 있는 컬럼은 건너뜀 (멱등성).
     """
+    # artifacts 테이블
     existing = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
     for col_name, col_type in _V4_NEW_COLUMNS:
         if col_name not in existing:
             conn.execute(f"ALTER TABLE artifacts ADD COLUMN {col_name} {col_type}")
+
+    # projects 테이블 — Step 15에서 project_type 추가
+    proj_existing = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    if "project_type" not in proj_existing:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN project_type TEXT DEFAULT 'doc_generation'"
+        )
+
     conn.commit()
 
 
