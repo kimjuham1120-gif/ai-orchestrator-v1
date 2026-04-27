@@ -95,9 +95,15 @@ async def index(request: Request):
 async def create_project(
     request: Request,
     raw_input: str = Form(""),
+    project_type: str = Form("doc_generation"),
     template_file: UploadFile = File(None),
+    context_files: list[UploadFile] = File(None),
 ):
-    # 양식 파일 파싱 (선택사항)
+    # 프로젝트 종류 검증
+    if project_type not in ("doc_generation", "app_dev"):
+        project_type = "doc_generation"
+
+    # 양식 파일 파싱 (문서 생성 모드 · 단일 · 선택)
     template_text = ""
     if template_file and template_file.filename:
         try:
@@ -107,7 +113,23 @@ async def create_project(
                 "error": f"양식 파일을 읽을 수 없습니다: {e}",
             })
 
-    result = handle_phase_0_5(raw_input, DB_PATH, template_text=template_text)
+    # 기획문서 묶음 파싱 (앱개발 모드 · 다중)
+    referenced_context = None
+    if project_type == "app_dev" and context_files:
+        try:
+            referenced_context = await _extract_referenced_context(context_files)
+        except Exception as e:
+            return templates.TemplateResponse(request, "index.html", {
+                "error": f"기획문서 처리 실패: {e}",
+            })
+
+    result = handle_phase_0_5(
+        raw_input,
+        DB_PATH,
+        template_text=template_text,
+        project_type=project_type,
+        referenced_context=referenced_context,
+    )
     if not result["ok"]:
         return templates.TemplateResponse(request, "index.html", {
             "error": result.get("error")},
@@ -468,6 +490,74 @@ async def _extract_template_text(upload: "UploadFile") -> str:
 
     # 모두 실패
     raise ValueError("파일 인코딩을 인식할 수 없습니다 (UTF-8/CP949/EUC-KR 시도)")
+
+
+async def _extract_referenced_context(uploads: list) -> dict:
+    """
+    앱개발 모드에서 업로드된 기획문서 묶음을 영구 저장 가능한 형태로 변환.
+
+    각 파일을 _extract_template_text()와 동일하게 파싱한 뒤,
+    파일별 메타데이터와 함께 하나의 dict로 묶음.
+
+    Returns:
+      {
+        "files": [
+          {
+            "filename": "CLAUDE.md",
+            "role": "context",       # 향후 자동 분류 가능
+            "content": "...",
+            "size_bytes": 12345
+          },
+          ...
+        ],
+        "uploaded_at": "2026-04-27T..."
+      }
+
+    제한:
+      - 파일별 200KB (각 _extract_template_text가 검증)
+      - 전체 합계 1MB (이 함수에서 검증)
+      - 빈 업로드 (filename 없음)는 무시
+    """
+    from datetime import datetime, timezone
+
+    MAX_TOTAL_BYTES = 1024 * 1024  # 1MB
+
+    files = []
+    total_bytes = 0
+
+    for upload in uploads:
+        # 빈 슬롯 무시 (사용자가 input을 비웠을 때 FastAPI가 빈 UploadFile을 줄 수 있음)
+        if not upload or not upload.filename:
+            continue
+
+        # 파일 파싱 (재사용 — 200KB 검증·.docx/.md/.txt 처리·인코딩 자동감지 모두 동일)
+        content = await _extract_template_text(upload)
+        if not content:
+            continue
+
+        size = len(content.encode("utf-8"))
+        total_bytes += size
+
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise ValueError(
+                f"기획문서 묶음 합계가 너무 큽니다 ({total_bytes//1024}KB). "
+                f"최대 {MAX_TOTAL_BYTES//1024}KB까지 허용됩니다."
+            )
+
+        files.append({
+            "filename": upload.filename,
+            "role": "context",
+            "content": content,
+            "size_bytes": size,
+        })
+
+    if not files:
+        return None  # 빈 업로드 → None 처리 (DB에 NULL)
+
+    return {
+        "files": files,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------

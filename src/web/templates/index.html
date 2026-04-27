@@ -12,19 +12,35 @@
 </section>
 
 <form method="POST" action="/projects" class="form-card" enctype="multipart/form-data">
+
+    <fieldset style="border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px;">
+        <legend style="padding: 0 8px; font-weight: 600;">프로젝트 종류</legend>
+        <label style="display: inline-flex; align-items: center; gap: 6px; margin-right: 24px; cursor: pointer;">
+            <input type="radio" name="project_type" value="doc_generation" checked>
+            <span>📄 문서 생성</span>
+            <small style="color: #888;">(보고서·사업계획서 등 단일 문서)</small>
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="project_type" value="app_dev">
+            <span>🔧 앱개발</span>
+            <small style="color: #888;">(점진적 빌드)</small>
+        </label>
+    </fieldset>
+
     <label for="raw_input">요청 내용</label>
     <textarea
         id="raw_input"
         name="raw_input"
         rows="6"
         placeholder="예) 카페 운영 사업계획서 작성해줘
-예) 로그인 버그 수정해줘
-예) 재고관리 시스템 만들어줘"
+예) 교회 광고 게시판 앱 만들어줘
+예) RoomCrafting v1을 첨부 문서 기준으로 만들어줘"
         required
     ></textarea>
 
+    {# 문서 생성 모드용 — 양식 파일 (단일, 선택) #}
     <label for="template_file" style="margin-top: 16px; display: block;">
-        양식 파일 <small style="color: #888; font-weight: normal;">(선택 · .docx · .md · .txt)</small>
+        📄 양식 파일 <small style="color: #888; font-weight: normal;">(문서 생성 모드 · 1개 · .docx/.md/.txt)</small>
     </label>
     <input
         type="file"
@@ -35,6 +51,23 @@
     >
     <small style="color: #888; display: block; margin-top: 4px;">
         ※ 양식 파일을 올리면, 이 양식의 구조·항목을 따라 결과물이 생성됩니다.
+    </small>
+
+    {# 앱개발 모드용 — 기획문서 묶음 (다중 파일) #}
+    <label for="context_files" style="margin-top: 24px; display: block;">
+        🔧 기획문서 묶음 <small style="color: #888; font-weight: normal;">(앱개발 모드 · 다중 파일 가능 · .md/.txt/.docx)</small>
+    </label>
+    <input
+        type="file"
+        id="context_files"
+        name="context_files"
+        accept=".md,.txt,.docx,text/markdown,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        multiple
+        style="display: block; margin-top: 6px;"
+    >
+    <small style="color: #888; display: block; margin-top: 4px;">
+        ※ 앱개발 모드에서 사용. CLAUDE.md, 기획서, 사양서 등을 함께 올리면 모든 작업 단위에서 자동 참조됩니다.
+        <br>※ 파일 1개당 최대 200KB · 전체 합계 최대 1MB.
     </small>
 
     <div class="form-actions">

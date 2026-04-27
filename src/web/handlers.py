@@ -42,6 +42,8 @@ def handle_phase_0_5(
     raw_input: str,
     db_path: str,
     template_text: str = "",
+    project_type: str = "doc_generation",
+    referenced_context: dict = None,
 ) -> Dict[str, Any]:
     """
     새 프로젝트 생성 + Phase 0.5 실행.
@@ -49,7 +51,9 @@ def handle_phase_0_5(
     Args:
       raw_input: 사용자 요청
       db_path: DB 경로
-      template_text: 양식 파일 텍스트 (선택, Phase 3에서 사용)
+      template_text: 양식 파일 텍스트 (선택, 문서 생성 모드에서 Phase 3가 사용)
+      project_type: "doc_generation" | "app_dev"
+      referenced_context: 앱개발 모드에서 업로드된 기획문서 묶음 (선택)
 
     Returns:
       {
@@ -99,6 +103,7 @@ def handle_phase_0_5(
             "updated_at": now,
             "current_phase": "phase_0_5",
             "status": "in_progress" if result.verdict == "possible" else "blocked",
+            "project_type": project_type,
         })
     except Exception as exc:
         clear_llm_context()
@@ -113,7 +118,10 @@ def handle_phase_0_5(
             "phase": "phase_0_5",
             "raw_input": text,
             "feasibility_result": result.to_dict(),
-            "template_text": template_text or None,  # 양식 파일 텍스트 (선택)
+            "template_text": template_text or None,            # 문서 모드용 양식
+            "project_type": project_type,                       # Step 15
+            "referenced_context": referenced_context,           # Step 15: 앱개발 모드 기획문서
+            "todo_status": "pending" if project_type == "app_dev" else None,
             "run_status": "phase_0_5_done",
         })
     except Exception:
