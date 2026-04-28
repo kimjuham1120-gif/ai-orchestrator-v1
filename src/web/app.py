@@ -215,6 +215,217 @@ async def app_dev_approve_todos(project_id: str):
     )
 
 
+@app.post("/project/{project_id}/app-dev/build/{todo_id}")
+async def app_dev_build_todo(project_id: str, todo_id: str):
+    """한 Todo 빌드 시작 (planner + executor LLM 호출 2회)."""
+    from src.web.handlers import handle_build_one_todo
+    handle_build_one_todo(project_id, todo_id, DB_PATH)
+    return RedirectResponse(
+        f"/project/{project_id}/app-dev/build/{todo_id}",
+        status_code=303,
+    )
+
+
+@app.get(
+    "/project/{project_id}/app-dev/build/{todo_id}",
+    response_class=HTMLResponse,
+)
+async def app_dev_build_page(project_id: str, todo_id: str, request: Request):
+    """빌드 결과 화면 — 변경될 파일 목록 + Cursor 패킷 다운로드."""
+    status = get_project_status(project_id, DB_PATH)
+    if not status["ok"]:
+        return templates.TemplateResponse(request, "index.html", {
+            "error": status.get("error"),
+        })
+
+    project = status["project"]
+    artifact = status["runs"][0] if status["runs"] else {}
+
+    if project.get("project_type") != "app_dev":
+        return templates.TemplateResponse(request, "index.html", {
+            "error": "앱개발 프로젝트가 아닙니다",
+        })
+
+    todo_list = artifact.get("todo_list") or {}
+    items = todo_list.get("items") or []
+    build_results = todo_list.get("build_results") or []
+
+    # 현재 Todo 찾기
+    todo = None
+    for t in items:
+        if t.get("id") == todo_id:
+            todo = t
+            break
+
+    if todo is None:
+        return templates.TemplateResponse(request, "index.html", {
+            "error": f"todo_id를 찾을 수 없습니다: {todo_id}",
+        })
+
+    # 이 todo의 가장 최근 빌드 결과
+    latest_build = None
+    for br in reversed(build_results):
+        if br.get("todo_id") == todo_id:
+            latest_build = br
+            break
+
+    return templates.TemplateResponse(request, "app_dev_build.html", {
+        "project": project,
+        "artifact": artifact,
+        "todo": todo,
+        "todo_list_items": items,
+        "build_result": latest_build,
+    })
+
+
+@app.post("/project/{project_id}/app-dev/skip/{todo_id}")
+async def app_dev_skip_todo(project_id: str, todo_id: str):
+    """Todo 건너뛰기."""
+    from src.web.handlers import handle_skip_todo
+    handle_skip_todo(project_id, todo_id, DB_PATH)
+    return RedirectResponse(
+        f"/project/{project_id}/app-dev/todos",
+        status_code=303,
+    )
+
+
+@app.post("/project/{project_id}/app-dev/complete/{todo_id}")
+async def app_dev_complete_todo(project_id: str, todo_id: str):
+    """Cursor 적용 완료 → 다음 Todo로."""
+    from src.web.handlers import handle_complete_todo
+    handle_complete_todo(project_id, todo_id, DB_PATH)
+    return RedirectResponse(
+        f"/project/{project_id}/app-dev/todos",
+        status_code=303,
+    )
+
+
+@app.get("/project/{project_id}/app-dev/packet/{todo_id}")
+async def app_dev_packet_download(project_id: str, todo_id: str):
+    """
+    Cursor에 던질 패킷(.md) 다운로드.
+
+    빌드 결과의 모든 파일을 한 markdown으로 묶어서 운영자가 Cursor 채팅에
+    붙여넣을 수 있는 형식으로 출력.
+    """
+    status = get_project_status(project_id, DB_PATH)
+    if not status["ok"]:
+        return Response(
+            status["error"] or "프로젝트를 찾을 수 없습니다",
+            status_code=404,
+            media_type="text/plain; charset=utf-8",
+        )
+
+    artifact = status["runs"][0] if status["runs"] else {}
+    todo_list = artifact.get("todo_list") or {}
+    build_results = todo_list.get("build_results") or []
+
+    latest_build = None
+    for br in reversed(build_results):
+        if br.get("todo_id") == todo_id:
+            latest_build = br
+            break
+
+    if not latest_build or not latest_build.get("ok"):
+        return Response(
+            "이 Todo의 성공한 빌드 결과가 없습니다.",
+            status_code=404,
+            media_type="text/plain; charset=utf-8",
+        )
+
+    result = latest_build.get("result") or {}
+    build = result.get("build") or {}
+    files = build.get("files") or []
+    summary = build.get("summary", "")
+    notes = build.get("notes", "")
+    todo_title = latest_build.get("todo_title", "")
+
+    # markdown 패킷 조립
+    lines = [
+        f"# Cursor 작업 패킷 — {todo_title}",
+        "",
+        f"**Todo ID**: `{todo_id}`",
+        f"**요약**: {summary}",
+        "",
+        "---",
+        "",
+        "## 운영자에게",
+        "",
+        "다음 파일들을 Cursor에 적용해주세요. 각 파일은 ` ``` ` 블록으로 구분되어 있습니다.",
+        "적용 후 빌드/테스트 실행하고, 결과를 시스템에 입력해주세요.",
+        "",
+    ]
+
+    if notes:
+        lines.extend([
+            "## 주의 사항",
+            "",
+            notes,
+            "",
+        ])
+
+    lines.extend([
+        f"## 변경할 파일 ({len(files)}개)",
+        "",
+    ])
+
+    for i, f in enumerate(files, 1):
+        action = f.get("action", "create")
+        path = f.get("path", "")
+        content = f.get("content", "")
+        reason = f.get("reason", "")
+
+        # 파일 확장자 → 코드 블록 언어 추정
+        ext_map = {
+            ".py": "python", ".ts": "typescript", ".tsx": "tsx",
+            ".js": "javascript", ".jsx": "jsx", ".html": "html",
+            ".css": "css", ".json": "json", ".md": "markdown",
+            ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
+        }
+        lang = ""
+        for ext, l in ext_map.items():
+            if path.endswith(ext):
+                lang = l
+                break
+
+        lines.append(f"### {i}. [{action.upper()}] `{path}`")
+        if reason:
+            lines.append(f"*{reason}*")
+        lines.append("")
+        lines.append(f"```{lang}")
+        lines.append(content)
+        lines.append("```")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("이 작업이 완료되면 시스템 화면에서 [Cursor 적용 완료] 버튼을 누르세요.")
+
+    md_content = "\n".join(lines)
+
+    # 다운로드용 응답
+    from urllib.parse import quote
+    # ASCII fallback: 영숫자 + 일부 기호만 (한글은 latin-1 인코딩 안 되므로 제외)
+    safe_title = "".join(
+        c if (c.isascii() and (c.isalnum() or c in "-_."))
+        else "_"
+        for c in todo_title[:30]
+    ).strip("_") or "todo"
+    filename_ascii = f"packet_{todo_id}_{safe_title}.md"
+    filename_utf8 = quote(f"패킷_{todo_title}_{todo_id}.md")
+
+    return Response(
+        content=md_content,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{filename_ascii}\"; "
+                f"filename*=UTF-8''{filename_utf8}"
+            ),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 1 — 서브주제 분해
 # ---------------------------------------------------------------------------
@@ -489,7 +700,7 @@ async def _extract_template_text(upload: "UploadFile") -> str:
 
     크기 제한: 200KB (LLM 토큰 폭발 방지)
     """
-    MAX_BYTES = 200 * 1024  # 200KB
+    MAX_BYTES = 1024 * 1024  # 1MB (사업계획서.docx 같은 큰 양식 파일 허용)
 
     # 비동기 read
     content = await upload.read()
@@ -569,7 +780,7 @@ async def _extract_referenced_context(uploads: list) -> dict:
     """
     from datetime import datetime, timezone
 
-    MAX_TOTAL_BYTES = 1024 * 1024  # 1MB
+    MAX_TOTAL_BYTES = 5 * 1024 * 1024  # 5MB (앱개발 기획문서 묶음 13개+)
 
     files = []
     total_bytes = 0

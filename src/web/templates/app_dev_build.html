@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project.title }} — Todo 빌드 — AI Orchestrator v4{% endblock %}
+
+{% block content %}
+<section class="project-header">
+    <h2>
+        {{ project.title }}
+        <small style="color: #888; font-weight: normal;">— Todo 빌드 결과</small>
+    </h2>
+    <div class="project-meta">
+        <span class="badge">{{ todo.status }}</span>
+        <a href="/project/{{ project.project_id }}/app-dev/todos" class="meta">← TodoList</a>
+    </div>
+</section>
+
+{# ============================================================ #}
+{# Todo 정보                                                     #}
+{# ============================================================ #}
+<section class="phase-card">
+    <h3 style="margin-top: 0;">{{ todo.title }}</h3>
+    <div class="meta">
+        <span class="badge">{{ todo.type }}</span>
+        <span class="meta">ID: <code>{{ todo.id }}</code></span>
+    </div>
+    {% if todo.description %}
+    <p style="margin-top: 8px; color: #4b5563;">{{ todo.description }}</p>
+    {% endif %}
+</section>
+
+{# ============================================================ #}
+{# 빌드 결과 분기                                                #}
+{# ============================================================ #}
+{% if not build_result %}
+
+{# 아직 빌드 안 함 #}
+<section class="phase-card" style="border: 2px solid #3b82f6; background: #eff6ff;">
+    <h3 style="color: #1e40af; margin-top: 0;">아직 빌드되지 않았습니다</h3>
+    <p style="margin-bottom: 16px;">
+        이 Todo의 빌드를 시작하려면 아래 버튼을 누르세요. LLM 2회 호출이 발생합니다.
+    </p>
+    <form method="POST" action="/project/{{ project.project_id }}/app-dev/build/{{ todo.id }}">
+        <button type="submit" class="btn btn-primary">▶ 빌드 시작 (LLM 호출)</button>
+        <small class="warn" style="display: block; margin-top: 6px;">
+            ⏱️ 30~120초 소요. 비용 약 $0.05~0.15.
+        </small>
+    </form>
+</section>
+
+{% elif not build_result.ok %}
+
+{# 빌드 실패 #}
+<section class="phase-card" style="border: 2px solid #ef4444; background: #fef2f2;">
+    <h3 style="color: #b91c1c; margin-top: 0;">❌ 빌드 실패</h3>
+    <p><strong>에러:</strong></p>
+    <pre style="background: white; padding: 12px; border-radius: 6px; white-space: pre-wrap; overflow-x: auto;">{{ build_result.error }}</pre>
+
+    {% if build_result.duration_ms %}
+    <p class="meta" style="margin-top: 8px;">소요 시간: {{ build_result.duration_ms }} ms</p>
+    {% endif %}
+
+    <form method="POST" action="/project/{{ project.project_id }}/app-dev/build/{{ todo.id }}"
+          style="margin-top: 16px;">
+        <button type="submit" class="btn btn-primary">🔄 재시도 (다시 빌드)</button>
+        <a href="/project/{{ project.project_id }}/app-dev/todos" class="btn btn-secondary">
+            ← TodoList로
+        </a>
+    </form>
+</section>
+
+{% else %}
+
+{# 빌드 성공 #}
+{% set build = build_result.result.build %}
+{% set plan = build_result.result.plan %}
+
+<section class="phase-card" style="border: 2px solid #22c55e; background: #f0fdf4;">
+    <h3 style="color: #15803d; margin-top: 0;">✅ 빌드 완료</h3>
+
+    {% if build.summary %}
+    <p style="margin-bottom: 8px;"><strong>요약:</strong> {{ build.summary }}</p>
+    {% endif %}
+
+    {% if build.notes %}
+    <p style="margin-bottom: 8px; padding: 8px; background: #fef3c7; border-radius: 4px;">
+        <strong>⚠️ 주의:</strong> {{ build.notes }}
+    </p>
+    {% endif %}
+
+    <div class="meta">
+        <span class="badge">{{ build.files|length }}개 파일</span>
+        <span class="badge">{{ build_result.duration_ms }} ms</span>
+    </div>
+</section>
+
+{# ============================================================ #}
+{# 빌드 단계 (planner 결과)                                       #}
+{# ============================================================ #}
+{% if plan and plan.steps %}
+<section class="phase-card">
+    <h3 style="margin-top: 0;">📋 진행 단계 ({{ plan.steps|length }}개)</h3>
+    <ol>
+        {% for step in plan.steps %}
+        <li style="margin-bottom: 6px;">
+            {{ step.description }}
+            {% if step.file_hint %}
+            <small style="color: #888;">— {{ step.file_hint|join(", ") }}</small>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ol>
+</section>
+{% endif %}
+
+{# ============================================================ #}
+{# 변경될 파일 목록                                              #}
+{# ============================================================ #}
+<section class="phase-card">
+    <h3 style="margin-top: 0;">📝 변경될 파일 ({{ build.files|length }}개)</h3>
+
+    {% for file in build.files %}
+    <details style="border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; margin-bottom: 8px;">
+        <summary style="cursor: pointer; font-weight: 600;">
+            {% if file.action == "create" %}
+            <span style="color: #15803d;">[+ CREATE]</span>
+            {% else %}
+            <span style="color: #b45309;">[~ MODIFY]</span>
+            {% endif %}
+            <code style="font-size: 0.95em;">{{ file.path }}</code>
+            <small style="color: #888; font-weight: normal;">
+                ({{ file.content|length }}자)
+            </small>
+        </summary>
+        {% if file.reason %}
+        <p style="margin: 8px 0; color: #6b7280; font-size: 0.9em;">
+            <strong>이유:</strong> {{ file.reason }}
+        </p>
+        {% endif %}
+        <pre style="
+            background: #f9fafb; padding: 12px; border-radius: 4px;
+            max-height: 400px; overflow: auto;
+            font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word;
+        "><code>{{ file.content }}</code></pre>
+    </details>
+    {% endfor %}
+</section>
+
+{# ============================================================ #}
+{# 운영자 액션                                                   #}
+{# ============================================================ #}
+<section class="phase-card" style="border: 2px solid #3b82f6; background: #eff6ff;">
+    <h3 style="color: #1e40af; margin-top: 0;">운영자 액션</h3>
+
+    <ol style="margin-bottom: 16px;">
+        <li>
+            <strong>패킷 다운로드</strong> 버튼을 눌러 .md 파일 받기
+        </li>
+        <li>
+            Cursor 열고, 작업 폴더에서 패킷 내용을 채팅에 붙여넣기
+        </li>
+        <li>
+            Cursor가 코드 적용 → 빌드/테스트 실행 (npm test 등)
+        </li>
+        <li>
+            성공하면 <strong>적용 완료</strong> 클릭 → 다음 Todo로
+        </li>
+        <li>
+            실패/수정 필요 시 <strong>재빌드</strong> 또는 <strong>건너뛰기</strong>
+        </li>
+    </ol>
+
+    <div class="action-group" style="display: flex; gap: 12px; flex-wrap: wrap;">
+        <a href="/project/{{ project.project_id }}/app-dev/packet/{{ todo.id }}"
+           class="btn btn-primary" download>
+            📥 Cursor 패킷 다운로드 (.md)
+        </a>
+
+        <form method="POST"
+              action="/project/{{ project.project_id }}/app-dev/complete/{{ todo.id }}"
+              style="display: inline;">
+            <button type="submit" class="btn btn-primary"
+                    style="background: #16a34a;">
+                ✅ 적용 완료 → 다음 Todo
+            </button>
+        </form>
+
+        <form method="POST"
+              action="/project/{{ project.project_id }}/app-dev/build/{{ todo.id }}"
+              style="display: inline;">
+            <button type="submit" class="btn btn-secondary">
+                🔄 재빌드 (다시 LLM 호출)
+            </button>
+        </form>
+
+        <form method="POST"
+              action="/project/{{ project.project_id }}/app-dev/skip/{{ todo.id }}"
+              style="display: inline;">
+            <button type="submit" class="btn btn-secondary"
+                    style="background: #6b7280; color: white;">
+                ⏭ 건너뛰기
+            </button>
+        </form>
+    </div>
+</section>
+
+{% endif %}
+
+{% endblock %}

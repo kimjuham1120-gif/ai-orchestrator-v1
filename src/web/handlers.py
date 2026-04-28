@@ -239,6 +239,210 @@ def handle_approve_todos(project_id: str, db_path: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Step 15 A6 · 앱개발 빌드 (Todo 단위)
+# ---------------------------------------------------------------------------
+
+def handle_build_one_todo(
+    project_id: str,
+    todo_id: str,
+    db_path: str,
+) -> Dict[str, Any]:
+    """
+    한 Todo의 빌드 사이클 실행 (planner → executor 2회 LLM 호출).
+
+    결과는 artifact의 'build_results' 리스트에 저장.
+    todo_list의 해당 항목 status를 'building' → 'ready_for_apply'로 갱신.
+
+    Returns:
+      {
+        "ok": bool,
+        "todo_id": str,
+        "summary": str,
+        "n_files": int,
+        "duration_ms": int,
+        "error": Optional[str],
+      }
+    """
+    project = load_project(db_path, project_id)
+    if not project:
+        return {"ok": False, "error": "프로젝트를 찾을 수 없습니다"}
+
+    if project.get("project_type") != "app_dev":
+        return {"ok": False, "error": "앱개발 프로젝트가 아닙니다"}
+
+    runs = list_project_runs(db_path, project_id)
+    if not runs:
+        return {"ok": False, "error": "artifact가 없습니다"}
+
+    artifact = runs[-1]
+
+    if artifact.get("todo_status") != "approved":
+        return {"ok": False, "error": "TodoList가 승인되지 않았습니다"}
+
+    todo_list = artifact.get("todo_list") or {}
+    items = todo_list.get("items") or []
+
+    target_todo = None
+    target_idx = -1
+    for i, t in enumerate(items):
+        if t.get("id") == todo_id:
+            target_todo = t
+            target_idx = i
+            break
+
+    if target_todo is None:
+        return {"ok": False, "error": f"todo_id를 찾을 수 없음: {todo_id}"}
+
+    # 이미 완료 / 진행 중이면 거부
+    current_status = target_todo.get("status", "pending")
+    if current_status not in ("pending", "skipped", "failed"):
+        return {
+            "ok": False,
+            "error": f"이미 {current_status} 상태입니다. 진행 불가.",
+        }
+
+    # prior_results 누적 (이전 완료된 Todo들)
+    todo_list_data = artifact.get("todo_list") or {}
+    build_results = todo_list_data.get("build_results") or []
+    prior = []
+    for br in build_results:
+        if br.get("ok"):
+            prior.append({
+                "title": br.get("todo_title", ""),
+                "summary": br.get("summary", ""),
+                "files": [{"path": p} for p in br.get("file_paths", []) if p],
+            })
+
+    # LLM 컨텍스트 (비용 추적)
+    set_llm_context(
+        db_path=db_path,
+        project_id=project_id,
+        run_id=artifact["run_id"],
+        phase=f"build_todo_{todo_id}",
+    )
+
+    try:
+        from src.app_dev.incremental_builder import build_one_todo
+        result = build_one_todo(
+            todo=target_todo,
+            referenced_context=artifact.get("referenced_context"),
+            prior_results=prior,
+        )
+    except Exception as exc:
+        clear_llm_context()
+        return {"ok": False, "error": f"build_one_todo 실행 실패: {exc}"}
+
+    clear_llm_context()
+
+    # 결과를 todo_list.build_results에 누적
+    new_entry = {
+        "todo_id": todo_id,
+        "todo_title": target_todo.get("title", ""),
+        "ok": result.ok,
+        "summary": result.summary,
+        "duration_ms": result.duration_ms,
+        "result": result.to_dict(),
+        "file_paths": [f.get("path", "") for f in result.files if f.get("path")],
+        "error": result.error,
+    }
+    build_results.append(new_entry)
+
+    # todo_list 항목 status 업데이트
+    new_todo_status = "ready_for_apply" if result.ok else "failed"
+    items[target_idx]["status"] = new_todo_status
+    todo_list_data["items"] = items
+    todo_list_data["build_results"] = build_results
+
+    update_artifact(db_path, artifact["run_id"], {
+        "todo_list": todo_list_data,
+        "current_todo_idx": target_idx,
+    })
+
+    return {
+        "ok": result.ok,
+        "todo_id": todo_id,
+        "summary": result.summary,
+        "n_files": len(result.files),
+        "duration_ms": result.duration_ms,
+        "error": result.error,
+    }
+
+
+def handle_skip_todo(
+    project_id: str,
+    todo_id: str,
+    db_path: str,
+) -> Dict[str, Any]:
+    """Todo를 'skipped' 상태로 변경. LLM 호출 없음."""
+    project = load_project(db_path, project_id)
+    if not project:
+        return {"ok": False, "error": "프로젝트를 찾을 수 없습니다"}
+
+    runs = list_project_runs(db_path, project_id)
+    artifact = runs[-1] if runs else None
+    if not artifact:
+        return {"ok": False, "error": "artifact가 없습니다"}
+
+    todo_list = artifact.get("todo_list") or {}
+    items = todo_list.get("items") or []
+
+    found = False
+    for t in items:
+        if t.get("id") == todo_id:
+            t["status"] = "skipped"
+            found = True
+            break
+
+    if not found:
+        return {"ok": False, "error": f"todo_id를 찾을 수 없음: {todo_id}"}
+
+    todo_list["items"] = items
+    update_artifact(db_path, artifact["run_id"], {"todo_list": todo_list})
+    return {"ok": True, "error": None}
+
+
+def handle_complete_todo(
+    project_id: str,
+    todo_id: str,
+    db_path: str,
+) -> Dict[str, Any]:
+    """
+    운영자가 Cursor 적용 + 테스트까지 끝냈을 때 호출.
+    Todo를 'completed'로 변경. 다음 Todo로 진행.
+    """
+    project = load_project(db_path, project_id)
+    if not project:
+        return {"ok": False, "error": "프로젝트를 찾을 수 없습니다"}
+
+    runs = list_project_runs(db_path, project_id)
+    artifact = runs[-1] if runs else None
+    if not artifact:
+        return {"ok": False, "error": "artifact가 없습니다"}
+
+    todo_list = artifact.get("todo_list") or {}
+    items = todo_list.get("items") or []
+
+    found = False
+    for t in items:
+        if t.get("id") == todo_id:
+            if t.get("status") not in ("ready_for_apply", "completed"):
+                return {
+                    "ok": False,
+                    "error": f"빌드되지 않은 Todo는 완료 처리 불가 (현재: {t.get('status')})",
+                }
+            t["status"] = "completed"
+            found = True
+            break
+
+    if not found:
+        return {"ok": False, "error": f"todo_id를 찾을 수 없음: {todo_id}"}
+
+    todo_list["items"] = items
+    update_artifact(db_path, artifact["run_id"], {"todo_list": todo_list})
+    return {"ok": True, "error": None}
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 · 서브주제 분해
 # ---------------------------------------------------------------------------
 
