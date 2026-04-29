@@ -125,58 +125,46 @@
         {% if n_pending %}<span class="badge" style="background: #e5e7eb; color: #374151;">대기 {{ n_pending }}</span>{% endif %}
     </div>
 
-    {# 다음 빌드할 Todo 찾기 (가장 첫 pending 또는 failed 항목)
-       Jinja2 for 루프는 스코프가 격리되므로 namespace() 사용 필수 #}
-    {% set ns = namespace(next_todo=none) %}
-    {% for item in todo_items %}
-        {% if ns.next_todo is none and item.status in ["pending", "failed"] %}
-            {% set ns.next_todo = item %}
-        {% endif %}
-    {% endfor %}
-    {% set next_todo = ns.next_todo %}
-
-    {% if next_todo %}
-    <p style="margin-bottom: 12px;">
-        <strong>다음 빌드 대상:</strong> {{ next_todo.title }}
-    </p>
-    <form method="POST" action="/project/{{ project.project_id }}/app-dev/build/{{ next_todo.id }}">
-        <button type="submit" class="btn btn-primary">▶ 다음 Todo 빌드 (LLM 호출)</button>
-        <small class="warn" style="display: block; margin-top: 6px;">
-            ⏱️ 30~120초 소요. 비용 약 $0.05~0.15.
-        </small>
-    </form>
-    {% else %}
-    <p style="color: #15803d; font-weight: 600;">
-        🎉 모든 Todo가 완료/건너뜀 상태입니다!
-    </p>
-    {% endif %}
-</section>
-
-{# Todo별 액션 (적용 대기 / 빌드 결과 보기) #}
-{% set ready_todos = [] %}
-{% for item in todo_items %}
-    {% if item.status == "ready_for_apply" %}
-        {% set _ = ready_todos.append(item) %}
-    {% endif %}
-{% endfor %}
-{% if ready_todos %}
-<section class="phase-card" style="border: 2px solid #f59e0b; background: #fffbeb;">
-    <h3 style="color: #b45309; margin-top: 0;">⚠️ 적용 대기 중 ({{ ready_todos|length }}개)</h3>
-    <p style="margin-bottom: 12px;">
-        빌드는 끝났지만 Cursor에 아직 적용 안 된 항목입니다.
-    </p>
-    <ul style="list-style: none; padding-left: 0;">
-        {% for item in ready_todos %}
-        <li style="padding: 8px 0; border-bottom: 1px solid #fde68a;">
-            <a href="/project/{{ project.project_id }}/app-dev/build/{{ item.id }}"
-               class="btn btn-secondary" style="font-size: 0.9em;">
-                📋 {{ item.title }} — 결과 보기
+    {# === Cursor 워크플로우 (추천) === #}
+    <div style="
+        margin: 16px 0;
+        padding: 16px;
+        background: white;
+        border: 2px solid #1e40af;
+        border-radius: 8px;
+    ">
+        <h4 style="color: #1e40af; margin-top: 0;">
+            🎯 추천: Cursor에서 개발하기
+        </h4>
+        <p style="margin-bottom: 12px; color: #4b5563;">
+            아래 두 파일을 다운받아 작업 폴더의 <code>docs/</code> 에 넣고 Cursor에서 시작하세요.
+            매 작업이 자동으로 진행되어 빠르고 비용도 절약됩니다.
+        </p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+            <a href="/project/{{ project.project_id }}/app-dev/docs.zip"
+               class="btn btn-primary" download>
+                📦 docs.zip 다운로드 (TodoList + 기획문서 일괄)
             </a>
-        </li>
-        {% endfor %}
-    </ul>
+            <a href="/project/{{ project.project_id }}/app-dev/todos/export.md"
+               class="btn btn-secondary" download>
+                📄 TODOS.md만 다운로드
+            </a>
+        </div>
+        <details style="margin-top: 8px;">
+            <summary style="cursor: pointer; color: #6b7280;">사용 방법 보기</summary>
+            <ol style="margin-top: 8px; line-height: 1.6;">
+                <li><code>C:\\Users\\MSI\\Desktop\\roomcrafting-v1\\</code> 같은 작업 폴더 만들기</li>
+                <li>다운받은 ZIP을 그 폴더 안에 압축 풀기 → <code>docs/</code> 폴더가 생김</li>
+                <li>Cursor에서 그 폴더 열기 (File → Open Folder)</li>
+                <li>Cursor 채팅창에 입력:
+                    <pre style="background: #f3f4f6; padding: 8px; margin-top: 4px; border-radius: 4px;">@docs/TODOS.md 읽고 1번 작업부터 시작해줘.
+모든 작업은 docs/ 의 모든 .md 파일을 컨텍스트로 사용해.</pre>
+                </li>
+                <li>Cursor가 알아서 코드 작성 → 사용자가 보면서 검증</li>
+            </ol>
+        </details>
+    </div>
 </section>
-{% endif %}
 
 {% else %}
 <section class="phase-card" style="border: 2px solid #3b82f6; background: #eff6ff;">
